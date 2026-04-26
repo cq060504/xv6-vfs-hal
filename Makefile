@@ -1,20 +1,20 @@
 K=kernel
 U=user
 
-OBJS = \
-  $K/entry.o \
-  $K/start.o \
+# 目标架构,默认 riscv,可选 loongarch
+ARCH ?= riscv
+HAL = hal
+
+# 通用内核对象(平台无关)
+K_OBJS = \
   $K/console.o \
   $K/printf.o \
-  $K/uart.o \
   $K/kalloc.o \
   $K/spinlock.o \
   $K/string.o \
   $K/main.o \
   $K/vm.o \
   $K/proc.o \
-  $K/swtch.o \
-  $K/trampoline.o \
   $K/trap.o \
   $K/syscall.o \
   $K/sysproc.o \
@@ -25,10 +25,31 @@ OBJS = \
   $K/file.o \
   $K/pipe.o \
   $K/exec.o \
-  $K/sysfile.o \
+  $K/sysfile.o
+
+# 平台相关对象(从 HAL 目录编译)
+HAL_OBJS = \
+  $K/start.o \
+  $K/entry.o \
+  $K/swtch.o \
+  $K/trampoline.o \
   $K/kernelvec.o \
   $K/plic.o \
+  $K/uart.o \
   $K/virtio_disk.o
+
+# HAL 平台实现对象(从 hal/$(ARCH)/ 编译)
+ARCH_OBJS = \
+  $(HAL)/$(ARCH)/hal_entry.o \
+  $(HAL)/$(ARCH)/hal_start.o \
+  $(HAL)/$(ARCH)/hal_swtch.o \
+  $(HAL)/$(ARCH)/hal_tramp.o \
+  $(HAL)/$(ARCH)/hal_kvec.o \
+  $(HAL)/$(ARCH)/hal_plic.o \
+  $(HAL)/$(ARCH)/hal_uart.o \
+  $(HAL)/$(ARCH)/hal_virtio.o
+
+OBJS = $(K_OBJS) $(HAL_OBJS) $(ARCH_OBJS)
 
 # riscv64-unknown-elf- or riscv64-linux-gnu-
 # perhaps in /opt/riscv/bin
@@ -74,6 +95,9 @@ CFLAGS += -fno-builtin-free
 CFLAGS += -fno-builtin-memcpy -Wno-main
 CFLAGS += -fno-builtin-printf -fno-builtin-fprintf -fno-builtin-vprintf
 CFLAGS += -I.
+CFLAGS += -I$(HAL)
+CFLAGS += -I$(HAL)/$(ARCH)
+CFLAGS += -DARCH_$(ARCH)
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
 
 # Disable PIE when possible (for Ubuntu 16.10 toolchain)
@@ -91,11 +115,24 @@ $K/kernel: $(OBJS) $K/kernel.ld
 	$(OBJDUMP) -S $K/kernel > $K/kernel.asm
 	$(OBJDUMP) -t $K/kernel | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $K/kernel.sym
 
+# 通用规则:编译 kernel/ 下的 .c -> .o
+$K/%.o: $K/%.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# 通用规则:编译 kernel/ 下的 .S -> .o
 $K/%.o: $K/%.S
-	$(CC) -march=rv64gc -g -c -o $@ $<
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# HAL 平台对象:编译 hal/$(ARCH)/ 下的 .c -> .o
+$(HAL)/$(ARCH)/%.o: $(HAL)/$(ARCH)/%.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# HAL 平台对象:编译 hal/$(ARCH)/ 下的 .S -> .o
+$(HAL)/$(ARCH)/%.o: $(HAL)/$(ARCH)/%.S
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 tags: $(OBJS)
-	etags kernel/*.S kernel/*.c
+	etags kernel/*.S kernel/*.c hal/*/*.S hal/*/*.c
 
 ULIB = $U/ulib.o $U/usys.o $U/printf.o $U/umalloc.o
 
@@ -149,9 +186,9 @@ UPROGS=\
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
 
--include kernel/*.d user/*.d
+-include kernel/*.d user/*.d hal/*/*.d
 
-clean: 
+clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*/*.o */*.d */*.asm */*.sym \
 	$K/kernel fs.img \
