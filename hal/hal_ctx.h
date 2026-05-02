@@ -1,16 +1,13 @@
+// Context switch abstraction.
+// struct hal_context holds callee-saved registers.
+// Layout is consumed by the platform swtch.S.
+
 #ifndef _HAL_CTX_H_
 #define _HAL_CTX_H_
 
 #include "types.h"
 
-// ============================================================
-// 上下文切换结构体抽象接口
-// ============================================================
-// struct hal_context 保存 callee-saved 寄存器。
-// 各平台汇编 swtch.S 实现对此结构的布局负责。
-// 各平台可在本文件中直接定义 struct hal_context。
-
-// ---------- RISC-V 实现 ----------
+// RISC-V context (14 callee-saved registers).
 struct hal_context {
   uint64 ra;
   uint64 sp;
@@ -28,7 +25,7 @@ struct hal_context {
   uint64 s11;
 };
 
-// ---------- 上下文切换函数 ----------
+// Save *old, load *new.
 void hal_switch(struct hal_context **old, struct hal_context *new);
 
 #endif

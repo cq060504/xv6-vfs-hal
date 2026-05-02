@@ -27,16 +27,8 @@ K_OBJS = \
   $K/exec.o \
   $K/sysfile.o
 
-# 平台相关对象(从 HAL 目录编译)
-HAL_OBJS = \
-  $K/start.o \
-  $K/entry.o \
-  $K/swtch.o \
-  $K/trampoline.o \
-  $K/kernelvec.o \
-  $K/plic.o \
-  $K/uart.o \
-  $K/virtio_disk.o
+# 平台相关对象(已移至 HAL 目录，不再从 kernel/ 编译)
+# HAL_OBJS 已由 ARCH_OBJS 替代
 
 # HAL 平台实现对象(从 hal/$(ARCH)/ 编译)
 ARCH_OBJS = \
@@ -49,7 +41,7 @@ ARCH_OBJS = \
   $(HAL)/$(ARCH)/hal_uart.o \
   $(HAL)/$(ARCH)/hal_virtio.o
 
-OBJS = $(K_OBJS) $(HAL_OBJS) $(ARCH_OBJS)
+OBJS = $(K_OBJS) $(ARCH_OBJS)
 
 # riscv64-unknown-elf- or riscv64-linux-gnu-
 # perhaps in /opt/riscv/bin
@@ -95,6 +87,7 @@ CFLAGS += -fno-builtin-free
 CFLAGS += -fno-builtin-memcpy -Wno-main
 CFLAGS += -fno-builtin-printf -fno-builtin-fprintf -fno-builtin-vprintf
 CFLAGS += -I.
+CFLAGS += -I$K
 CFLAGS += -I$(HAL)
 CFLAGS += -I$(HAL)/$(ARCH)
 CFLAGS += -DARCH_$(ARCH)
@@ -110,8 +103,8 @@ endif
 
 LDFLAGS = -z max-page-size=4096
 
-$K/kernel: $(OBJS) $K/kernel.ld
-	$(LD) $(LDFLAGS) -T $K/kernel.ld -o $K/kernel $(OBJS) 
+$K/kernel: $(OBJS) $(HAL)/$(ARCH)/kernel.ld
+	$(LD) $(LDFLAGS) -T $(HAL)/$(ARCH)/kernel.ld -o $K/kernel $(OBJS)
 	$(OBJDUMP) -S $K/kernel > $K/kernel.asm
 	$(OBJDUMP) -t $K/kernel | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $K/kernel.sym
 

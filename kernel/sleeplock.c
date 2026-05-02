@@ -1,10 +1,9 @@
 // Sleeping locks
 
 #include "types.h"
-#include "riscv.h"
+#include "hal/hal.h"
 #include "defs.h"
 #include "param.h"
-#include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
 #include "sleeplock.h"
