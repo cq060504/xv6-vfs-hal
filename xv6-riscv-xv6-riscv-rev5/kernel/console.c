@@ -22,14 +22,13 @@
 #include "defs.h"
 #include "proc.h"
 
-#define BACKSPACE 0x100  // erase the last output character
+#define BACKSPACE 0x100
 #define C(x)  ((x)-'@')  // Control-x
 
 //
-// send one character to the uart, but don't use
-// interrupts or sleep(). safe to be called from
-// interrupts, e.g. by printf and to echo input
-// characters.
+// send one character to the uart.
+// called by printf(), and to echo input characters,
+// but not from write().
 //
 void
 consputc(int c)
@@ -45,7 +44,7 @@ consputc(int c)
 struct {
   struct spinlock lock;
   
-  // input circular buffer
+  // input
 #define INPUT_BUF_SIZE 128
   char buf[INPUT_BUF_SIZE];
   uint r;  // Read index
@@ -54,13 +53,12 @@ struct {
 } cons;
 
 //
-// user write() system calls to the console go here.
-// uses sleep() and UART interrupts.
+// user write()s to the console go here.
 //
 int
 consolewrite(int user_src, uint64 src, int n)
 {
-  char buf[32]; // move batches from user space to uart.
+  char buf[32];
   int i = 0;
 
   while(i < n){
@@ -79,7 +77,7 @@ consolewrite(int user_src, uint64 src, int n)
 //
 // user read()s from the console go here.
 // copy (up to) a whole input line to dst.
-// user_dst indicates whether dst is a user
+// user_dist indicates whether dst is a user
 // or kernel address.
 //
 int
@@ -134,7 +132,7 @@ consoleread(int user_dst, uint64 dst, int n)
 
 //
 // the console input interrupt handler.
-// uartintr() calls this for each input character.
+// uartintr() calls this for input character.
 // do erase/kill processing, append to cons.buf,
 // wake up consoleread() if a whole line has arrived.
 //

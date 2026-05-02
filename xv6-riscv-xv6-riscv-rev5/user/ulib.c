@@ -9,12 +9,11 @@
 // wrapper so that it's OK if main() does not call exit().
 //
 void
-start(int argc, char **argv)
+start()
 {
-  int r;
-  extern int main(int argc, char **argv);
-  r = main(argc, argv);
-  exit(r);
+  extern int main();
+  main();
+  exit(0);
 }
 
 char*
