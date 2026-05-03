@@ -1,1 +1,0 @@
-/xv6/xv6-riscv-xv6-riscv-rev5/test-xv6.py
