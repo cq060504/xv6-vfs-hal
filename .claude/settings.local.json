@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/usr/bin/git log *)",
+      "Bash(/usr/local/bin/git log *)",
+      "Bash(ln *)",
+      "Bash(make *)"
+    ]
+  }
+}

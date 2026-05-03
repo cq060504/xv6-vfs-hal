@@ -11,6 +11,9 @@
 import argparse, os, inspect, re, signal, subprocess, sys, time
 from subprocess import run
 
+# Ensure we run from the directory containing the Makefile.
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 parser = argparse.ArgumentParser()
 parser.add_argument('testrex', help="test name or regular expression")
 parser.add_argument("-q", action='store_true', help="usertests quick")
@@ -32,7 +35,7 @@ class QEMU(object):
 
     def reset_fs(self):
         try:
-            run(["rm", "fs.img"], check=True)
+            run(["rm", "-f", "fs.img"], check=True)
             run(["make", "fs.img"], check=True)
         except subprocess.CalledProcessError as e:
             print(f"Command failed with exit code {e.returncode}")
@@ -46,7 +49,7 @@ class QEMU(object):
     def save_output(self):
       try:
         with open("test-xv6.out", "w") as f:
-            f.write(self.out)
+            f.write(self.output)
             f.close()
       except OSError as e:
         print("Provided a bad results path. Error:", e)     
@@ -77,7 +80,7 @@ class QEMU(object):
     def lines(self):
         return self.output.splitlines()
 
-    def error(self, regexps):
+    def error(self, regexps=None):
         print("FAIL: match failed", regexps)
         self.save_output()
         self.stop()
@@ -103,7 +106,7 @@ class QEMU(object):
             time.sleep(1)
             timeleft = deadline - time.time()
             if timeleft < 0:
-                self.error()
+                self.error(regexps)
             self.read()
             ok, _ = self.match(*regexps, exit=False)
             if ok:
@@ -192,7 +195,7 @@ def test_usertests(test=""):
     if args.q:
         opt = " -q"
         timeout = 300
-    elif test != "":
+    elif test != "" and test != "usertests":
         opt += " " + test
     q = QEMU(True)
     q.cmd("usertests" + opt + "\n")
