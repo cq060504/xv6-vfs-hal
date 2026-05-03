@@ -4,7 +4,9 @@
       "Bash(make clean *)",
       "Bash(make qemu *)",
       "Bash(python3 *)",
-      "Bash(pkill -f qemu-system-riscv64)"
+      "Bash(pkill -f qemu-system-riscv64)",
+      "Bash(make -C /xv6/xv6-riscv-xv6-riscv-rev5 qemu)",
+      "Bash(make *)"
     ]
   }
 }

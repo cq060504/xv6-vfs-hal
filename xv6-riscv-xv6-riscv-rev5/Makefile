@@ -184,6 +184,7 @@ fs.img: mkfs/mkfs README $(UPROGS)
 clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*/*.o */*.d */*.asm */*.sym \
+	hal/*/*.o hal/*/*.d hal/*/*.asm hal/*/*.sym \
 	$K/kernel fs.img \
 	mkfs/mkfs .gdbinit \
         $U/usys.S \
