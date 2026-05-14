@@ -1,3 +1,5 @@
+#include "riscv.h"
+
 struct buf;
 struct context;
 struct file;
@@ -8,6 +10,8 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+struct vnode;
+struct mount;
 
 // bio.c
 void            binit(void);
@@ -47,13 +51,12 @@ void            iunlock(struct inode*);
 void            iunlockput(struct inode*);
 void            iupdate(struct inode*);
 int             namecmp(const char*, const char*);
-struct inode*   namei(char*);
-struct inode*   nameiparent(char*, char*);
 int             readi(struct inode*, int, uint64, uint, uint);
 void            stati(struct inode*, struct stat*);
 int             writei(struct inode*, int, uint64, uint, uint);
 void            itrunc(struct inode*);
 void            ireclaim(int);
+struct inode*   iget(uint, uint);
 
 // kalloc.c
 void*           kalloc(void);
@@ -180,6 +183,28 @@ void            plic_complete(int);
 void            virtio_disk_init(void);
 void            virtio_disk_rw(struct buf *, int);
 void            virtio_disk_intr(void);
+
+// vfs.c
+void            vfs_init(void);
+struct vnode*   vfs_root(void);
+struct vnode*   vfs_namei(char*);
+struct vnode*   vfs_nameiparent(char*, char*);
+int             vfs_open(char*, int, struct vnode**);
+int             vfs_read(struct vnode*, uint64, int, uint);
+int             vfs_write(struct vnode*, uint64, int, uint);
+int             vfs_readdir(struct vnode*, uint64, uint);
+int             vfs_close(struct vnode*);
+int             vfs_create(struct vnode*, char*, short, struct vnode**);
+int             vfs_unlink(struct vnode*, char*);
+int             vfs_mkdir(struct vnode*, char*);
+int             vfs_link(struct vnode*, struct vnode*, char*);
+int             vfs_stat(struct vnode*, uint64);
+void            vn_lock(struct vnode*);
+void            vn_unlock(struct vnode*);
+void            vput(struct vnode*);
+struct vnode*   vget(struct vnode*);
+struct mount*   vfs_mount(char*, uint, char*);
+void            vfs_register(struct mount* (*)(uint), char*);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

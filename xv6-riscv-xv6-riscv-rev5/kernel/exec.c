@@ -6,8 +6,17 @@
 #include "proc.h"
 #include "defs.h"
 #include "elf.h"
+#include "vfs.h"
+#include "fs.h"
+#include "file.h"
 
-static int loadseg(pde_t *, uint64, struct inode *, uint, uint);
+// Temporary: access underlying inode via vnode's priv field.
+// Will be replaced once VFS read supports kernel dst addresses.
+struct xv6fs_vnode_priv {
+  struct inode *ip;
+};
+
+static int loadseg(pagetable_t, uint64, struct inode *, uint, uint);
 
 // map ELF permissions to PTE permission bits.
 int flags2perm(int flags)
@@ -30,19 +39,25 @@ kexec(char *path, char **argv)
   int i, off;
   uint64 argc, sz = 0, sp, ustack[MAXARG], stackbase;
   struct elfhdr elf;
+  struct vnode *vp;
   struct inode *ip;
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
   struct proc *p = myproc();
 
-  begin_op();
-
-  // Open the executable file.
-  if((ip = namei(path)) == 0){
-    end_op();
+  // Open the executable file via VFS
+  if((vp = vfs_namei(path)) == 0)
     return -1;
-  }
+
+  // Extract underlying inode for readi() — VFS read API doesn't
+  // support user_dst=0 (kernel addresses) needed by loadseg.
+  vn_lock(vp);
+  struct xv6fs_vnode_priv *priv = (struct xv6fs_vnode_priv*)vp->priv;
+  ip = priv->ip;
   ilock(ip);
+  vn_unlock(vp);
+
+  begin_op();
 
   // Read the ELF header.
   if(readi(ip, 0, (uint64)&elf, 0, sizeof(elf)) != sizeof(elf))
@@ -74,8 +89,14 @@ kexec(char *path, char **argv)
     if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
       goto bad;
   }
-  iunlockput(ip);
+
+  // Split iunlockput to prevent double-iput from vput → xv6fs_destroy
+  iunlock(ip);
+  priv->ip = 0;  // xv6fs_destroy will skip iput
+  iput(ip);
   end_op();
+  vput(vp);
+  vp = 0;
   ip = 0;
 
   p = myproc();
@@ -144,6 +165,8 @@ kexec(char *path, char **argv)
     iunlockput(ip);
     end_op();
   }
+  if(vp)
+    vput(vp);
   return -1;
 }
 

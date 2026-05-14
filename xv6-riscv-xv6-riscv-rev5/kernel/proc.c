@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "vfs.h"
 
 struct cpu cpus[NCPU];
 
@@ -224,7 +225,8 @@ userinit(void)
   p = allocproc();
   initproc = p;
   
-  p->cwd = namei("/");
+  // cwd will be set in forkret() after vfs_mount()
+  p->cwd = 0;
 
   p->state = RUNNABLE;
 
@@ -283,7 +285,7 @@ kfork(void)
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
-  np->cwd = idup(p->cwd);
+  np->cwd = vget(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
@@ -337,9 +339,7 @@ kexit(int status)
     }
   }
 
-  begin_op();
-  iput(p->cwd);
-  end_op();
+  vput(p->cwd);
   p->cwd = 0;
 
   acquire(&wait_lock);
@@ -514,6 +514,8 @@ forkret(void)
     // regular process (e.g., because it calls sleep), and thus cannot
     // be run from main().
     fsinit(ROOTDEV);
+    vfs_mount("/", ROOTDEV, "xv6fs");
+    p->cwd = vfs_root();
 
     first = 0;
     // ensure other cores see first=0.

@@ -1,6 +1,7 @@
 // On-disk file system format.
 // Both the kernel and user programs use this header file.
 
+#include "sleeplock.h"
 
 #define ROOTINO  1   // root i-number
 #define BSIZE 1024  // block size
@@ -58,3 +59,18 @@ struct dirent {
   char name[DIRSIZ];
 };
 
+// in-memory copy of an inode
+struct inode {
+  uint dev;           // Device number
+  uint inum;          // Inode number
+  int ref;            // Reference count
+  struct sleeplock lock; // protects everything below here
+  int valid;          // inode has been read from disk?
+
+  short type;         // copy of disk inode
+  short major;
+  short minor;
+  short nlink;
+  uint size;
+  uint addrs[NDIRECT+1];
+};

@@ -190,7 +190,7 @@ iinit()
   }
 }
 
-static struct inode* iget(uint dev, uint inum);
+struct inode* iget(uint dev, uint inum);
 
 // Allocate an inode on device dev.
 // Mark it as allocated by  giving it type type.
@@ -244,7 +244,7 @@ iupdate(struct inode *ip)
 // Find the inode with number inum on device dev
 // and return the in-memory copy. Does not lock
 // the inode and does not read it from disk.
-static struct inode*
+struct inode*
 iget(uint dev, uint inum)
 {
   struct inode *ip, *empty;
@@ -642,6 +642,7 @@ dirlink(struct inode *dp, char *name, uint inum)
 //   skipelem("a", name) = "", setting name = "a"
 //   skipelem("", name) = skipelem("////", name) = 0
 //
+#if 0
 static char*
 skipelem(char *path, char *name)
 {
@@ -666,11 +667,11 @@ skipelem(char *path, char *name)
     path++;
   return path;
 }
+#endif
 
 // Look up and return the inode for a path name.
-// If parent != 0, return the inode for the parent and copy the final
-// path element into name, which must have room for DIRSIZ bytes.
-// Must be called inside a transaction since it calls iput().
+// Deprecated in VFS branch — use vfs_namei/vfs_nameiparent instead.
+#if 0
 static struct inode*
 namex(char *path, int nameiparent, char *name)
 {
@@ -688,7 +689,6 @@ namex(char *path, int nameiparent, char *name)
       return 0;
     }
     if(nameiparent && *path == '\0'){
-      // Stop one level early.
       iunlock(ip);
       return ip;
     }
@@ -718,3 +718,4 @@ nameiparent(char *path, char *name)
 {
   return namex(path, 1, name);
 }
+#endif

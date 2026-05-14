@@ -26,9 +26,10 @@ main()
     plicinithart();  // ask PLIC for device interrupts
     binit();         // buffer cache
     iinit();         // inode table
+    vfs_init();      // VFS layer (register filesystems, no I/O)
     fileinit();      // file table
     virtio_disk_init(); // emulated hard disk
-    userinit();      // first user process
+    userinit();      // first user process (forkret handles fsinit + mount)
     __sync_synchronize();
     started = 1;
   } else {
