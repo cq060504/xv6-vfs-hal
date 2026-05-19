@@ -111,7 +111,6 @@ alloc_vnode(void)
     }
   }
   release(&vnode_lock);
-  panic("alloc_vnode: no free vnodes");
   return 0;
 }
 
@@ -211,7 +210,7 @@ skipelem(char *path, char *name)
 struct vnode*
 vfs_namei(char *path)
 {
-  char name[14];
+  char name[15];
   struct vnode *vp, *next;
   struct mount *submp;
   char *rest;
@@ -257,7 +256,7 @@ vfs_namei(char *path)
 struct vnode*
 vfs_nameiparent(char *path, char *name)
 {
-  char buf[14];
+  char buf[15];
   struct vnode *vp, *next;
   struct mount *submp;
   char *rest;
@@ -267,11 +266,18 @@ vfs_nameiparent(char *path, char *name)
 
   while((rest = skipelem(rest, buf)) != 0){
     if(*rest == '\0'){
-      safestrcpy(name, buf, 14);
+      safestrcpy(name, buf, 15);
+      if(vp->type != V_DIR){
+        vput(vp);
+        return 0;
+      }
       return vp;
     }
     vn_lock(vp);
     if(vp->type != V_DIR){
+      vn_unlock(vp); vput(vp); return 0;
+    }
+    if(vp->ops == 0 || vp->ops->lookup == 0){
       vn_unlock(vp); vput(vp); return 0;
     }
     if(vp->ops->lookup(vp, buf, &next) != 0){
@@ -304,7 +310,7 @@ vfs_open(char *path, int mode, struct vnode **vp)
   struct vnode *ip;
   if((ip = vfs_namei(path)) == 0){
     if(mode & O_CREATE){
-      char name[14];
+      char name[15];
       struct vnode *dir = vfs_nameiparent(path, name);
       if(dir == 0) return -1;
       vn_lock(dir);
@@ -315,6 +321,11 @@ vfs_open(char *path, int mode, struct vnode **vp)
     } else {
       return -1;
     }
+  }
+  // O_CREATE on an existing directory should fail
+  if((mode & O_CREATE) && ip->type == V_DIR){
+    vput(ip);
+    return -1;
   }
   // Reject write-open on directories (O_WRONLY or O_RDWR)
   if(ip->type == V_DIR && (mode & (O_WRONLY | O_RDWR))){
@@ -356,6 +367,7 @@ vfs_close(struct vnode *vp)
 int
 vfs_create(struct vnode *dir, char *name, short type, struct vnode **new)
 {
+  if(dir->type != V_DIR) return -1;
   if(dir->ops == 0 || dir->ops->create == 0) return -1;
   vn_lock(dir);
   int r = VOP_CREATE(dir, name, type, new);
@@ -366,6 +378,7 @@ vfs_create(struct vnode *dir, char *name, short type, struct vnode **new)
 int
 vfs_unlink(struct vnode *dir, char *name)
 {
+  if(dir->type != V_DIR) return -1;
   if(dir->ops == 0 || dir->ops->unlink == 0) return -1;
   vn_lock(dir);
   int r = VOP_UNLINK(dir, name);
@@ -376,6 +389,7 @@ vfs_unlink(struct vnode *dir, char *name)
 int
 vfs_mkdir(struct vnode *dir, char *name)
 {
+  if(dir->type != V_DIR) return -1;
   if(dir->ops == 0 || dir->ops->mkdir == 0) return -1;
   vn_lock(dir);
   int r = VOP_MKDIR(dir, name);
@@ -386,6 +400,7 @@ vfs_mkdir(struct vnode *dir, char *name)
 int
 vfs_link(struct vnode *old, struct vnode *newdir, char *name)
 {
+  if(newdir->type != V_DIR) return -1;
   if(newdir->ops == 0 || newdir->ops->link == 0) return -1;
   vn_lock(newdir);
   int r = VOP_LINK(newdir, name, old);
@@ -403,9 +418,25 @@ vfs_stat(struct vnode *vp, uint64 addr)
 int
 vfs_mknod(struct vnode *dir, char *name, int major, int minor)
 {
+  if(dir->type != V_DIR) return -1;
   if(dir->ops == 0 || dir->ops->mknod == 0) return -1;
   vn_lock(dir);
   int r = VOP_MKNOD(dir, name, major, minor);
   vn_unlock(dir);
   return r;
+}
+
+int
+vfs_read_kernel(struct vnode *vp, uint64 buf, int n, uint off)
+{
+  if(vp->ops == 0 || vp->ops->read_kernel == 0) return -1;
+  return VOP_READ_KERNEL(vp, buf, n, off);
+}
+
+int
+vfs_truncate(struct vnode *vp)
+{
+  if(vp->ops == 0 || vp->ops->truncate == 0) return -1;
+  if(vp->type != V_FILE) return -1;
+  return VOP_TRUNCATE(vp);
 }

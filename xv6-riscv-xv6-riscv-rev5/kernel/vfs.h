@@ -15,6 +15,8 @@ struct vnode_ops {
   int (*unlink)(struct vnode*, char*);
   int (*mkdir)(struct vnode*, char*);
   int (*link)(struct vnode*, char*, struct vnode*);
+  int (*read_kernel)(struct vnode*, uint64, int, uint);
+  int (*truncate)(struct vnode*);
   void (*destroy)(void*);
 };
 
@@ -60,6 +62,8 @@ struct mount {
 #define VOP_MKDIR(v,n)       (v)->ops->mkdir(v,n)
 #define VOP_LINK(v,n,o)      (v)->ops->link(v,n,o)
 #define VOP_MKNOD(v,n,ma,mi) (v)->ops->mknod(v,n,ma,mi)
+#define VOP_READ_KERNEL(v,a,n,o) (v)->ops->read_kernel(v,a,n,o)
+#define VOP_TRUNCATE(v)      (v)->ops->truncate(v)
 #define VFS_ROOT(m)          (m)->ops->root(m)
 
 void          vfs_init(void);
@@ -89,6 +93,8 @@ int           vfs_mkdir(struct vnode*, char*);
 int           vfs_link(struct vnode*, struct vnode*, char*);
 int           vfs_stat(struct vnode*, uint64);
 int           vfs_mknod(struct vnode*, char*, int, int);
+int           vfs_read_kernel(struct vnode*, uint64, int, uint);
+int           vfs_truncate(struct vnode*);
 
 void          vfs_register(struct mount* (*)(uint), char*);
 struct mount* xv6fs_mount(uint);

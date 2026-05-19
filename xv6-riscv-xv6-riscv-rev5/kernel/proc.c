@@ -27,9 +27,10 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
-// Allocate a page for each process's kernel stack.
-// Map it high in memory, followed by an invalid
-// guard page.
+// Allocate two pages for each process's kernel stack.
+// Map them high in memory, preceded by an invalid
+// guard page. Using 2 pages to support deeper call
+// chains from VFS layer.
 void
 proc_mapstacks(pagetable_t kpgtbl)
 {
@@ -39,8 +40,13 @@ proc_mapstacks(pagetable_t kpgtbl)
     char *pa = kalloc();
     if(pa == 0)
       panic("kalloc");
+    char *pa2 = kalloc();
+    if(pa2 == 0)
+      panic("kalloc");
     uint64 va = KSTACK((int) (p - proc));
+    // Map two physical pages for kernel stack
     kvmmap(kpgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+    kvmmap(kpgtbl, va + PGSIZE, (uint64)pa2, PGSIZE, PTE_R | PTE_W);
   }
 }
 
@@ -145,7 +151,7 @@ found:
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
-  p->context.sp = p->kstack + PGSIZE;
+  p->context.sp = p->kstack + 2*PGSIZE;
 
   return p;
 }

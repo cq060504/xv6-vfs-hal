@@ -16,11 +16,6 @@
 #include "fcntl.h"
 #include "vfs.h"
 
-// Temporary: access underlying inode via vnode's priv field (for O_TRUNC).
-struct xv6fs_vnode_priv {
-  struct inode *ip;
-};
-
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -215,12 +210,7 @@ sys_open(void)
 
   // O_TRUNC: truncate regular file to zero bytes
   if((omode & O_TRUNC) && vp->type == V_FILE){
-    struct xv6fs_vnode_priv *priv = (struct xv6fs_vnode_priv*)vp->priv;
-    begin_op();
-    ilock(priv->ip);
-    itrunc(priv->ip);
-    iunlock(priv->ip);
-    end_op();
+    vfs_truncate(vp);
   }
 
   f->vnode = vp;

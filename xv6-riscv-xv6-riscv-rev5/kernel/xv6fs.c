@@ -45,8 +45,13 @@ xv6fs_vnode_from_inode(struct inode *ip, uint dev)
   struct vnode *vp = alloc_vnode();
   struct xv6fs_vnode_priv *priv;
 
+  if(vp == 0) return 0;
+
   priv = (struct xv6fs_vnode_priv*)kalloc();
-  if(priv == 0) panic("xv6fs: kalloc priv");
+  if(priv == 0){
+    vput(vp);
+    return 0;
+  }
   priv->ip = ip;
 
   if(ip->type == T_DIR)
@@ -71,7 +76,7 @@ xv6fs_mount(uint dev)
   struct inode *ip;
 
   mp = (struct mount*)kalloc();
-  if(mp == 0) panic("xv6fs_mount: kalloc");
+  if(mp == 0) return 0;
   mp->ops = &xv6fs_vfsops;
   mp->dev = dev;
   mp->priv = 0;
@@ -83,6 +88,10 @@ xv6fs_mount(uint dev)
   ilock(ip);
   mp->root = xv6fs_vnode_from_inode(ip, dev);
   iunlock(ip);
+  if(mp->root == 0){
+    kfree((void*)mp);
+    return 0;
+  }
   return mp;
 }
 
@@ -100,6 +109,10 @@ xv6fs_lookup(struct vnode *dir, char *name, struct vnode **result)
   struct inode *ip;
 
   ilock(dp);
+  if(dp->type != T_DIR){
+    iunlock(dp);
+    return -1;
+  }
   ip = dirlookup(dp, name, 0);
   iunlock(dp);
 
@@ -108,6 +121,7 @@ xv6fs_lookup(struct vnode *dir, char *name, struct vnode **result)
   ilock(ip);
   *result = xv6fs_vnode_from_inode(ip, dir->dev);
   iunlock(ip);
+  if(*result == 0) return -1;
   return 0;
 }
 
@@ -220,6 +234,11 @@ xv6fs_create(struct vnode *dir, char *name, short type, struct vnode **new)
   begin_op();
 
   ilock(dp);
+  if(dp->type != T_DIR){
+    iunlock(dp);
+    end_op();
+    return -1;
+  }
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlock(dp);
     iput(ip);
@@ -249,8 +268,21 @@ xv6fs_create(struct vnode *dir, char *name, short type, struct vnode **new)
 
   if(type == V_DIR){
     ilock(ip);
-    if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
-      panic("create: dirlink . or ..");
+    if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0){
+      // Undo the name entry we just added in dp
+      uint off;
+      struct inode *tmp;
+      struct dirent de;
+      if((tmp = dirlookup(dp, name, &off)) == ip){
+        memset(&de, 0, sizeof(de));
+        writei(dp, 0, (uint64)&de, off, sizeof(de));
+      }
+      iunlock(ip);
+      iunlock(dp);
+      iput(ip);
+      end_op();
+      return -1;
+    }
     iunlock(ip);
     dp->nlink++;
     iupdate(dp);
@@ -263,6 +295,7 @@ xv6fs_create(struct vnode *dir, char *name, short type, struct vnode **new)
     ilock(ip);
     *new = xv6fs_vnode_from_inode(ip, dir->dev);
     iunlock(ip);
+    if(*new == 0) return -1;
   }
   return 0;
 }
@@ -278,6 +311,11 @@ xv6fs_unlink(struct vnode *dir, char *name)
 
   begin_op();
   ilock(dp);
+  if(dp->type != T_DIR){
+    iunlock(dp);
+    end_op();
+    return -1;
+  }
   if((ip = dirlookup(dp, name, &off)) == 0){
     iunlock(dp);
     end_op();
@@ -375,6 +413,11 @@ xv6fs_mknod(struct vnode *dir, char *name, int major, int minor)
 
   begin_op();
   ilock(dp);
+  if(dp->type != T_DIR){
+    iunlock(dp);
+    end_op();
+    return -1;
+  }
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlock(dp);
     iput(ip);
@@ -406,18 +449,44 @@ xv6fs_mknod(struct vnode *dir, char *name, int major, int minor)
   return 0;
 }
 
+static int
+xv6fs_read_kernel(struct vnode *vp, uint64 buf, int n, uint off)
+{
+  struct xv6fs_vnode_priv *priv = (struct xv6fs_vnode_priv*)vp->priv;
+  struct inode *ip = priv->ip;
+  ilock(ip);
+  int r = readi(ip, 0, buf, off, n);
+  iunlock(ip);
+  return r;
+}
+
+static int
+xv6fs_truncate(struct vnode *vp)
+{
+  struct xv6fs_vnode_priv *priv = (struct xv6fs_vnode_priv*)vp->priv;
+  struct inode *ip = priv->ip;
+  begin_op();
+  ilock(ip);
+  itrunc(ip);
+  iunlock(ip);
+  end_op();
+  return 0;
+}
+
 static struct vnode_ops xv6fs_vnops = {
-  .lookup  = xv6fs_lookup,
-  .mknod   = xv6fs_mknod,
-  .read    = xv6fs_read,
-  .write   = xv6fs_write,
-  .stat    = xv6fs_stat,
-  .readdir = xv6fs_readdir,
-  .create  = xv6fs_create,
-  .unlink  = xv6fs_unlink,
-  .mkdir   = xv6fs_mkdir,
-  .link    = xv6fs_link,
-  .destroy = xv6fs_destroy,
+  .lookup      = xv6fs_lookup,
+  .mknod       = xv6fs_mknod,
+  .read        = xv6fs_read,
+  .write       = xv6fs_write,
+  .stat        = xv6fs_stat,
+  .readdir     = xv6fs_readdir,
+  .create      = xv6fs_create,
+  .unlink      = xv6fs_unlink,
+  .mkdir       = xv6fs_mkdir,
+  .link        = xv6fs_link,
+  .read_kernel = xv6fs_read_kernel,
+  .truncate    = xv6fs_truncate,
+  .destroy     = xv6fs_destroy,
 };
 
 static struct vfs_ops xv6fs_vfsops = {

@@ -109,9 +109,11 @@ fileread(struct file *f, uint64 addr, int n)
       return -1;
     r = devsw[f->major].read(1, addr, n);
   } else if(f->type == FD_INODE){
+    vn_lock(f->vnode);
     r = vfs_read(f->vnode, addr, n, f->off);
     if(r > 0)
       f->off += r;
+    vn_unlock(f->vnode);
   } else {
     panic("fileread");
   }
@@ -136,9 +138,11 @@ filewrite(struct file *f, uint64 addr, int n)
       return -1;
     ret = devsw[f->major].write(1, addr, n);
   } else if(f->type == FD_INODE){
+    vn_lock(f->vnode);
     ret = vfs_write(f->vnode, addr, n, f->off);
     if(ret > 0)
       f->off += ret;
+    vn_unlock(f->vnode);
   } else {
     panic("filewrite");
   }
