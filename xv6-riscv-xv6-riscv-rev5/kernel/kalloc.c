@@ -4,9 +4,8 @@
 
 #include "types.h"
 #include "param.h"
-#include "memlayout.h"
+#include "hal/hal.h"
 #include "spinlock.h"
-#include "riscv.h"
 #include "defs.h"
 
 void freerange(void *pa_start, void *pa_end);

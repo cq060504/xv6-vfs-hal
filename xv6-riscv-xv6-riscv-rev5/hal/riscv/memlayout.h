@@ -1,21 +1,18 @@
-// Physical memory layout
-
+// RISC-V physical memory layout for qemu -machine virt.
+//
 // qemu -machine virt is set up like this,
 // based on qemu's hw/riscv/virt.c:
 //
 // 00001000 -- boot ROM, provided by qemu
 // 02000000 -- CLINT
 // 0C000000 -- PLIC
-// 10000000 -- uart0 
-// 10001000 -- virtio disk 
-// 80000000 -- qemu's boot ROM loads the kernel here,
-//             then jumps here.
+// 10000000 -- uart0
+// 10001000 -- virtio disk
+// 80000000 -- qemu's boot ROM loads the kernel here, then jumps here.
 // unused RAM after 80000000.
 
-// the kernel uses physical memory thus:
-// 80000000 -- entry.S, then kernel text and data
-// end -- start of kernel page allocation area
-// PHYSTOP -- end RAM used by the kernel
+#ifndef _HAL_RISCV_MEMLAYOUT_H_
+#define _HAL_RISCV_MEMLAYOUT_H_
 
 // qemu puts UART registers here in physical memory.
 #define UART0 0x10000000L
@@ -45,7 +42,7 @@
 
 // map kernel stacks beneath the trampoline,
 // each surrounded by invalid guard pages.
-// Changed from 2*PGSIZE to 3*PGSIZE: 2 pages stack + 1 page guard.
+// 3*PGSIZE: 2 pages for kernel stack (deeper VFS call chains) + 1 guard page
 #define KSTACK(p) (TRAMPOLINE - ((p)+1)* 3*PGSIZE)
 
 // User memory layout.
@@ -58,3 +55,5 @@
 //   TRAPFRAME (p->trapframe, used by the trampoline)
 //   TRAMPOLINE (the same page as in the kernel)
 #define TRAPFRAME (TRAMPOLINE - PGSIZE)
+
+#endif

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout *)",
+      "Bash(make clean *)",
+      "Bash(make *)",
+      "Bash(tee /tmp/qemu_output.txt)",
+      "Bash(tee /tmp/qemu2_output.txt)",
+      "Bash(timeout 300 qemu-system-riscv64 -machine virt -bios none -kernel /xv6/xv6-riscv-xv6-riscv-rev5/kernel/kernel -m 128M -smp 3 -nographic -global virtio-mmio.force-legacy=false -drive file=/xv6/xv6-riscv-xv6-riscv-rev5/fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0)",
+      "Bash(tee /tmp/qemu3_output.txt)",
+      "Bash(python3 /xv6/xv6-riscv-xv6-riscv-rev5/test-xv6.py usertests)",
+      "Bash(kill -9 2084 2086 2138 2163)",
+      "Bash(timeout 300 python3 -u /xv6/xv6-riscv-xv6-riscv-rev5/test-xv6.py usertests)"
+    ]
+  }
+}

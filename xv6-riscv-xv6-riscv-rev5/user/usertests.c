@@ -5,7 +5,6 @@
 #include "kernel/fs.h"
 #include "kernel/fcntl.h"
 #include "kernel/syscall.h"
-#include "kernel/memlayout.h"
 #include "kernel/riscv.h"
 
 //

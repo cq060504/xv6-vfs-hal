@@ -1,20 +1,20 @@
 K=kernel
 U=user
 
-OBJS = \
-  $K/entry.o \
-  $K/start.o \
+# Target architecture, default riscv, optional loongarch
+ARCH ?= riscv
+HAL = hal
+
+# Platform-independent kernel objects
+K_OBJS = \
   $K/console.o \
   $K/printf.o \
-  $K/uart.o \
   $K/kalloc.o \
   $K/spinlock.o \
   $K/string.o \
   $K/main.o \
   $K/vm.o \
   $K/proc.o \
-  $K/swtch.o \
-  $K/trampoline.o \
   $K/trap.o \
   $K/syscall.o \
   $K/sysproc.o \
@@ -27,14 +27,24 @@ OBJS = \
   $K/exec.o \
   $K/sysfile.o \
   $K/vfs.o \
-  $K/xv6fs.o \
-  $K/kernelvec.o \
-  $K/plic.o \
-  $K/virtio_disk.o
+  $K/xv6fs.o
+
+# Platform-specific objects (compiled from hal/$(ARCH)/)
+ARCH_OBJS = \
+  $(HAL)/$(ARCH)/hal_entry.o \
+  $(HAL)/$(ARCH)/hal_start.o \
+  $(HAL)/$(ARCH)/hal_swtch.o \
+  $(HAL)/$(ARCH)/hal_tramp.o \
+  $(HAL)/$(ARCH)/hal_kvec.o \
+  $(HAL)/$(ARCH)/hal_plic.o \
+  $(HAL)/$(ARCH)/hal_uart.o \
+  $(HAL)/$(ARCH)/hal_virtio.o
+
+OBJS = $(K_OBJS) $(ARCH_OBJS)
 
 # riscv64-unknown-elf- or riscv64-linux-gnu-
 # perhaps in /opt/riscv/bin
-#TOOLPREFIX = 
+#TOOLPREFIX =
 
 # Try to infer the correct TOOLPREFIX if not set
 ifndef TOOLPREFIX
@@ -42,6 +52,8 @@ TOOLPREFIX := $(shell if riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big' 
 	then echo 'riscv64-unknown-elf-'; \
 	elif riscv64-elf-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
 	then echo 'riscv64-elf-'; \
+	elif riscv64-none-elf-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
+	then echo 'riscv64-none-elf-'; \
 	elif riscv64-linux-gnu-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
 	then echo 'riscv64-linux-gnu-'; \
 	elif riscv64-unknown-linux-gnu-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
@@ -61,7 +73,8 @@ LD = $(TOOLPREFIX)ld
 OBJCOPY = $(TOOLPREFIX)objcopy
 OBJDUMP = $(TOOLPREFIX)objdump
 
-CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb -gdwarf-2
+CFLAGS = -Wall -Werror -Wno-unknown-attributes -O -fno-omit-frame-pointer -ggdb -gdwarf-2
+CFLAGS += -march=rv64gc
 CFLAGS += -MD
 CFLAGS += -mcmodel=medany
 CFLAGS += -ffreestanding
@@ -73,6 +86,10 @@ CFLAGS += -fno-builtin-free
 CFLAGS += -fno-builtin-memcpy -Wno-main
 CFLAGS += -fno-builtin-printf -fno-builtin-fprintf -fno-builtin-vprintf
 CFLAGS += -I.
+CFLAGS += -I$K
+CFLAGS += -I$(HAL)
+CFLAGS += -I$(HAL)/$(ARCH)
+CFLAGS += -DARCH_$(ARCH)
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
 
 # Disable PIE when possible (for Ubuntu 16.10 toolchain)
@@ -85,16 +102,29 @@ endif
 
 LDFLAGS = -z max-page-size=4096
 
-$K/kernel: $(OBJS) $K/kernel.ld
-	$(LD) $(LDFLAGS) -T $K/kernel.ld -o $K/kernel $(OBJS) 
+$K/kernel: $(OBJS) $(HAL)/$(ARCH)/kernel.ld
+	$(LD) $(LDFLAGS) -T $(HAL)/$(ARCH)/kernel.ld -o $K/kernel $(OBJS)
 	$(OBJDUMP) -S $K/kernel > $K/kernel.asm
 	$(OBJDUMP) -t $K/kernel | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $K/kernel.sym
 
+# Generic rules: compile kernel/ .c -> .o
+$K/%.o: $K/%.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# Generic rules: compile kernel/ .S -> .o
 $K/%.o: $K/%.S
-	$(CC) -g -c -o $@ $<
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# HAL platform objects: compile hal/$(ARCH)/ .c -> .o
+$(HAL)/$(ARCH)/%.o: $(HAL)/$(ARCH)/%.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# HAL platform objects: compile hal/$(ARCH)/ .S -> .o
+$(HAL)/$(ARCH)/%.o: $(HAL)/$(ARCH)/%.S
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 tags: $(OBJS)
-	etags kernel/*.S kernel/*.c
+	etags kernel/*.S kernel/*.c hal/*/*.S hal/*/*.c
 
 ULIB = $U/ulib.o $U/usys.o $U/printf.o $U/umalloc.o
 
@@ -116,7 +146,7 @@ $U/_forktest: $U/forktest.o $(ULIB)
 	$(OBJDUMP) -S $U/_forktest > $U/forktest.asm
 
 mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
-	gcc -I. -o mkfs/mkfs mkfs/mkfs.c
+	gcc -Wno-unknown-attributes -I. -o mkfs/mkfs mkfs/mkfs.c
 
 # Prevent deletion of intermediate files, e.g. cat.o, after first build, so
 # that disk image changes after first build are persistent until clean.  More
@@ -148,11 +178,12 @@ UPROGS=\
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
 
--include kernel/*.d user/*.d
+-include kernel/*.d user/*.d hal/*/*.d
 
-clean: 
+clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*/*.o */*.d */*.asm */*.sym \
+	hal/*/*.o hal/*/*.d hal/*/*.asm hal/*/*.sym \
 	$K/kernel fs.img \
 	mkfs/mkfs .gdbinit \
         $U/usys.S \

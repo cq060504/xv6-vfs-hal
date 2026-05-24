@@ -1,0 +1,50 @@
+新增文件（3个）
+文件       内容
+vfs.h      VFS 接口：struct vnode / vnode_ops / mount / vfs_ops 定义
+vfs.c      VFS 核心：vnode管理、路径解析（绝对+相对）、open/read/write/readdir/stat
+xv6fs.c  xv6原生FS适配层：mount回调 + 10个vnode_ops函数
+（lookup/read/write/create/unlink/mkdir/link/mknod/stat/readdir）
+
+修改文件（13个）      修改内容
+sysfile.c                      系统调用改用 VFS，f->vnode 替代 f->ip
+file.c                           fileread/filewrite/filestat/fileclose 操作 f->vnode
+exec.c                        vfs_namei 打开 ELF，通过 vp->priv 获取 inode
+fs.c                             iget 去 static；废弃 namex/namei/nameiparent
+main.c                       加 vfs_init() 注册 xv6fs
+proc.c                        forkret 加 fsinit+vfs_mount+vfs_root；kfork/kexit 用 vget/vput
+defs.h                        加 VFS 函数声明 + xv6fs_mount 声明
+fs.h                            恢复被误删的 struct inode
+file.h                          struct file: struct vnode *vnode 替代 struct inode *ip
+proc.h                          cwd 从 struct inode* 改为 struct vnode*
+sleeplock.h                加 include guard
+spinlock.h                加 include guard
+riscv.h                      加 include guard
+
+
+与 HAL 合并前需要统一的 6 件事
+1. 块设备接口
+当前 bread(dev, blockno) 是 xv6 硬编码。HAL 需统一定义：
+int hal_readblk(struct device *dev, uint64 blkno, void *buf);
+int hal_writeblk(struct device *dev, uint64 blkno, void *buf);
+
+2. 日志/事务
+begin_op() / end_op() / log_write() 是 xv6 特有的。ext2/fat 不需要这个日志。建议 HAL 提供
+可选的事务接口，VFS 层不强制调用。
+
+3. 超级块存储位置
+struct mount 的 priv （ void* ）各文件系统各自存超块。需要约定：
+xv6fs -> struct superblock （已在 fs.c 全局）
+ext2 -> struct ext2_superblock
+fat -> struct fat_bpb
+
+4. 设备号 → 设备对象
+当前用 uint dev （整数）。HAL 需改成 struct device *dev ，否则 ext2/fat 无法传入各自的设备
+上下文。
+
+5. 块缓存 (buffer cache)
+struct buf 的 bread/brelse 机制是 xv6 内部实现。HAL 应该提供 void* malloc_blk() +
+hal_readblk() 替代，或直接让各 FS 自己管理块缓存。
+
+6. I/O 路径中 inode 锁的归属
+xv6fs.c 中每个 vnode_ops 函数都手动调用了 ilock(ip) / iunlock(ip) 。HAL 需决定锁是在 VFS
+层还是在 FS 实现层管理。建议：FS 实现负责内部锁（如 ilock），VFS 层只负责 vnode 的 refcount。

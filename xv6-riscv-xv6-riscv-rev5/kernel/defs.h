@@ -1,4 +1,4 @@
-#include "riscv.h"
+#include "hal/hal.h"
 
 struct buf;
 struct context;
