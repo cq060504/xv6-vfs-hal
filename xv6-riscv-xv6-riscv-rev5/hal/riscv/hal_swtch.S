@@ -6,6 +6,8 @@
 
 
 .globl swtch
+.globl hal_switch
+hal_switch:
 swtch:
         sd ra, 0(a0)
         sd sp, 8(a0)

@@ -21,8 +21,8 @@ main()
     procinit();      // process table
     trapinit();      // trap vectors
     trapinithart();  // install kernel trap vector
-    plicinit();      // set up interrupt controller
-    plicinithart();  // ask PLIC for device interrupts
+    hal_irq_init();      // set up interrupt controller
+    hal_irq_hart_init();  // ask PLIC for device interrupts
     binit();         // buffer cache
     iinit();         // inode table
     fileinit();      // file table
@@ -37,7 +37,7 @@ main()
     printf("hart %d starting\n", cpuid());
     kvminithart();    // turn on paging
     trapinithart();   // install kernel trap vector
-    plicinithart();   // ask PLIC for device interrupts
+    hal_irq_hart_init();   // ask PLIC for device interrupts
   }
 
   scheduler();        

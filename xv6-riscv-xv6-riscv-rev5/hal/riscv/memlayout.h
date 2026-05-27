@@ -42,7 +42,8 @@
 
 // map kernel stacks beneath the trampoline,
 // each surrounded by invalid guard pages.
-#define KSTACK(p) (TRAMPOLINE - ((p)+1)* 2*PGSIZE)
+// 3*PGSIZE: 2 pages for kernel stack (deeper VFS call chains) + 1 guard page
+#define KSTACK(p) (TRAMPOLINE - ((p)+1)* 3*PGSIZE)
 
 // User memory layout.
 // Address zero first:

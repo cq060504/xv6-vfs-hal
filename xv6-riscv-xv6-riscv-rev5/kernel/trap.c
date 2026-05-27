@@ -48,9 +48,9 @@ usertrap(void)
   struct proc *p = myproc();
   
   // save user program counter.
-  p->trapframe->epc = r_sepc();
-  
-  if(r_scause() == 8){
+  p->trapframe->epc = hal_read_sepc();
+
+  if(hal_read_scause() == 8){
     // system call
 
     if(killed(p))
@@ -62,17 +62,17 @@ usertrap(void)
 
     // an interrupt will change sepc, scause, and sstatus,
     // so enable only now that we're done with those registers.
-    intr_on();
+    hal_intr_on();
 
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else if((r_scause() == 15 || r_scause() == 13) &&
-            vmfault(p->pagetable, r_stval(), (r_scause() == 13)? 1 : 0) != 0) {
+  } else if((hal_read_scause() == 15 || hal_read_scause() == 13) &&
+            vmfault(p->pagetable, hal_read_stval(), (hal_read_scause() == 13)? 1 : 0) != 0) {
     // page fault on lazily-allocated page
   } else {
-    printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
+    printf("usertrap(): unexpected scause 0x%lx pid=%d\n", hal_read_scause(), p->pid);
+    printf("            sepc=0x%lx stval=0x%lx\n", hal_read_sepc(), hal_read_stval());
     setkilled(p);
   }
 
@@ -103,30 +103,30 @@ prepare_return(void)
   // we're about to switch the destination of traps from
   // kerneltrap() to usertrap(). because a trap from kernel
   // code to usertrap would be a disaster, turn off interrupts.
-  intr_off();
+  hal_intr_off();
 
   // send syscalls, interrupts, and exceptions to uservec in trampoline.S
   uint64 trampoline_uservec = TRAMPOLINE + (uservec - trampoline);
-  w_stvec(trampoline_uservec);
+  hal_write_stvec(trampoline_uservec);
 
   // set up trapframe values that uservec will need when
   // the process next traps into the kernel.
-  p->trapframe->kernel_satp = r_satp();         // kernel page table
+  p->trapframe->kernel_satp = hal_read_satp();         // kernel page table
   p->trapframe->kernel_sp = p->kstack + PGSIZE; // process's kernel stack
   p->trapframe->kernel_trap = (uint64)usertrap;
-  p->trapframe->kernel_hartid = r_tp();         // hartid for cpuid()
+  p->trapframe->kernel_hartid = hal_get_hartid();      // hartid for cpuid()
 
   // set up the registers that trampoline.S's sret will use
   // to get to user space.
-  
+
   // set S Previous Privilege mode to User.
-  unsigned long x = r_sstatus();
+  unsigned long x = hal_read_sstatus();
   x &= ~SSTATUS_SPP; // clear SPP to 0 for user mode
   x |= SSTATUS_SPIE; // enable interrupts in user mode
-  w_sstatus(x);
+  hal_write_sstatus(x);
 
   // set S Exception Program Counter to the saved user pc.
-  w_sepc(p->trapframe->epc);
+  hal_write_sepc(p->trapframe->epc);
 }
 
 // interrupts and exceptions from kernel code go here via kernelvec,
@@ -135,18 +135,18 @@ void
 kerneltrap()
 {
   int which_dev = 0;
-  uint64 sepc = r_sepc();
-  uint64 sstatus = r_sstatus();
-  uint64 scause = r_scause();
-  
+  uint64 sepc = hal_read_sepc();
+  uint64 sstatus = hal_read_sstatus();
+  uint64 scause = hal_read_scause();
+
   if((sstatus & SSTATUS_SPP) == 0)
     panic("kerneltrap: not from supervisor mode");
-  if(intr_get() != 0)
+  if(hal_intr_get() != 0)
     panic("kerneltrap: interrupts enabled");
 
   if((which_dev = devintr()) == 0){
     // interrupt or trap from an unknown source
-    printf("scause=0x%lx sepc=0x%lx stval=0x%lx\n", scause, r_sepc(), r_stval());
+    printf("scause=0x%lx sepc=0x%lx stval=0x%lx\n", scause, hal_read_sepc(), hal_read_stval());
     panic("kerneltrap");
   }
 
@@ -156,8 +156,8 @@ kerneltrap()
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
-  w_sepc(sepc);
-  w_sstatus(sstatus);
+  hal_write_sepc(sepc);
+  hal_write_sstatus(sstatus);
 }
 
 void
@@ -173,7 +173,7 @@ clockintr()
   // ask for the next timer interrupt. this also clears
   // the interrupt request. 1000000 is about a tenth
   // of a second.
-  w_stimecmp(r_time() + 1000000);
+  hal_set_timer(hal_get_time() + 1000000);
 }
 
 // check if it's an external interrupt or software interrupt,
@@ -184,16 +184,16 @@ clockintr()
 int
 devintr()
 {
-  uint64 scause = r_scause();
+  uint64 scause = hal_read_scause();
 
   if(scause == 0x8000000000000009L){
     // this is a supervisor external interrupt, via PLIC.
 
     // irq indicates which device interrupted.
-    int irq = plic_claim();
+    int irq = hal_irq_claim();
 
     if(irq == UART0_IRQ){
-      uartintr();
+      hal_console_intr(consoleintr);
     } else if(irq == VIRTIO0_IRQ){
       virtio_disk_intr();
     } else if(irq){
@@ -204,7 +204,7 @@ devintr()
     // interrupt at a time; tell the PLIC the device is
     // now allowed to interrupt again.
     if(irq)
-      plic_complete(irq);
+      hal_irq_complete(irq);
 
     return 1;
   } else if(scause == 0x8000000000000005L){

@@ -35,9 +35,9 @@ consputc(int c)
 {
   if(c == BACKSPACE){
     // if the user typed backspace, overwrite with a space.
-    uartputc_sync('\b'); uartputc_sync(' '); uartputc_sync('\b');
+    hal_putchar_sync('\b'); hal_putchar_sync(' '); hal_putchar_sync('\b');
   } else {
-    uartputc_sync(c);
+    hal_putchar_sync(c);
   }
 }
 
@@ -188,7 +188,7 @@ consoleinit(void)
 {
   initlock(&cons.lock, "cons");
 
-  uartinit();
+  hal_console_init();
 
   // connect read and write system calls
   // to consoleread and consolewrite.

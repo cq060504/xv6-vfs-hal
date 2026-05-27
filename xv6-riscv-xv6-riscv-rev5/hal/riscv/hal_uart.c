@@ -156,3 +156,10 @@ uartintr(void)
     consoleintr(c);
   }
 }
+
+// ---- HAL unified interface wrappers ----
+void hal_console_init(void)                  { uartinit(); }
+void hal_putchar_sync(int c)                 { uartputc_sync(c); }
+void hal_putchar(int c)                      { uartputc_sync(c); }
+int  hal_getchar(void)                       { return uartgetc(); }
+void hal_console_intr(void (*handler)(int))  { uartintr(); }

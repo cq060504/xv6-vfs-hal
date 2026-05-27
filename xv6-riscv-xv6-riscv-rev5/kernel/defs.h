@@ -1,5 +1,5 @@
 struct buf;
-struct context;
+struct hal_context;
 struct file;
 struct inode;
 struct pipe;
@@ -103,7 +103,7 @@ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
 
 // swtch.S
-void            swtch(struct context*, struct context*);
+void            swtch(struct hal_context*, struct hal_context*);
 
 // spinlock.c
 void            acquire(struct spinlock*);

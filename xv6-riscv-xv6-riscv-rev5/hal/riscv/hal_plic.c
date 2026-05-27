@@ -46,3 +46,9 @@ plic_complete(int irq)
   int hart = cpuid();
   *(uint32*)PLIC_SCLAIM(hart) = irq;
 }
+
+// ---- HAL unified interface wrappers ----
+void hal_irq_init(void)           { plicinit(); }
+void hal_irq_hart_init(void)      { plicinithart(); }
+int  hal_irq_claim(void)          { return plic_claim(); }
+void hal_irq_complete(int irq)    { plic_complete(irq); }

@@ -204,24 +204,75 @@ void hal_start(void);
 
 ## 当前状态与下一步
 
-### ✅ 已完成（第3周）
-- RISC-V HAL 全部接口完成
-- `hal/riscv/arch.h` — RISC-V CSR 内联函数与 PTE 宏（~367行）
-- `hal/riscv/memlayout.h` — RISC-V 物理地址布局
-- `hal/riscv/hal_entry.S` — 启动入口（.text.entry 段）
-- `hal/riscv/hal_tramp.S` — 用户态陷入/返回（trampoline）
-- `hal/riscv/hal_swtch.S` — 上下文切换
-- `hal/riscv/hal_kvec.S` — 内核态中断向量
-- `hal/riscv/hal_start.c` — M态启动（start + timerinit）
-- `hal/riscv/hal_plic.c` — PLIC 中断控制器
-- `hal/riscv/hal_uart.c` — 16550a UART 驱动
-- `hal/riscv/hal_virtio.c` — Virtio 磁盘驱动
-- `hal/riscv/kernel.ld` — 平台链接脚本
-- `hal/hal.h` + 子系统头文件 — 统一 HAL 接口层
-- 全部 kernel .c 文件改用 `#include "hal/hal.h"`
-- Makefile 支持 `ARCH=riscv` 编译，平台代码从 hal/riscv/ 编译
-- ✅ `make qemu` 正常启动，usertests 全部通过（ALL TESTS PASSED）
-- ✅ 崩溃恢复测试全部通过（log/forphan/dorphan）
+### ✅ 已完成（第3-4周过渡：HAL 接口统一）
+
+#### 最终 RISC-V HAL 代码规模（共 19 个文件，1561 行）
+
+**HAL 接口头文件（hal/，8 个文件，179 行）**
+
+| 文件 | 行数 | 说明 |
+|---|---|---|
+| `hal/hal.h` | 30 | 统一入口，条件编译选择平台 + 聚合子系统头文件 |
+| `hal/hal_arch.h` | 38 | CPU 控制接口（CSR 读写、核心 ID、中断使能） |
+| `hal/hal_intr.h` | 14 | 中断控制器接口（init/hart_init/claim/complete） |
+| `hal/hal_timer.h` | 17 | 定时器接口（get_time/set_timer/timer_init） |
+| `hal/hal_vm.h` | 18 | 虚拟内存接口（TLB 刷新 + PTE 常量引用） |
+| `hal/hal_memlayout.h` | 17 | 内存布局抽象（内核镜像边界符号） |
+| `hal/hal_console.h` | 14 | 控制台 I/O 接口（同步/异步输出、输入、中断回调） |
+| `hal/hal_ctx.h` | 31 | 上下文切换（hal_context 结构体 + hal_switch 声明） |
+
+**RISC-V 平台实现（hal/riscv/，11 个文件，1382 行）**
+
+| 文件 | 行数 | 说明 |
+|---|---|---|
+| `arch.h` | 388 | CSR 内联函数（r_/w_前缀）+ PTE 宏 + 19 个 hal_ 内联包装 |
+| `memlayout.h` | 59 | RISC-V virt 机器物理地址布局（UART0/PLIC/KERNBASE 等） |
+| `hal_entry.S` | 21 | 启动入口（.text.entry 段，设栈 → 跳 start） |
+| `hal_start.c` | 71 | M 态启动（start）+ timerinit + hal_timer_init 包装 |
+| `hal_plic.c` | 54 | PLIC 中断控制器 + 4 个 hal_irq_* 包装 |
+| `hal_uart.c` | 165 | 16550a UART 驱动 + 5 个 hal_console_* 包装 |
+| `hal_virtio.c` | 326 | Virtio 磁盘驱动 |
+| `hal_swtch.S` | 42 | 上下文切换汇编 + hal_switch 别名 |
+| `hal_tramp.S` | 149 | 用户态陷入/返回（trampoline） |
+| `hal_kvec.S` | 62 | 内核态中断向量 |
+| `kernel.ld` | 45 | RISC-V 链接脚本（入口 0x80000000） |
+
+**内核层修改（kernel/，7 个文件）**
+
+| 文件 | 变更说明 |
+|---|---|
+| `main.c` | `plicinit/plicinithart` → `hal_irq_init/hal_irq_hart_init` |
+| `trap.c` | 全部 CSR/PLIC/UART/定时器调用改用 hal_ 前缀（~30 处） |
+| `console.c` | `uartputc_sync/uartinit` → `hal_putchar_sync/hal_console_init` |
+| `proc.c` | `swtch` → `hal_switch`，`r_tp` → `hal_get_hartid`，`intr_*` → `hal_intr_*` |
+| `proc.h` | `struct context` → `#include "hal/hal_ctx.h"` + `struct hal_context` |
+| `defs.h` | 前向声明和 swtch 签名改用 `struct hal_context` |
+| `hal_ctx.h` | 修正 `hal_switch` 第一个参数从双指针改为单指针 |
+
+#### Bug 修复记录
+
+**#1 hal_get_hartid 特权级错误**
+- **症状**：内核静默崩溃，无任何输出
+- **根因**：`hal_get_hartid()` 调用 `r_mhartid()` → `csrr mhartid`。`mhartid` 是 M 态 CSR，`start()` 执行 `mret` 切换到 S 态后无法访问，触发非法指令异常
+- **修复**：改为调用 `r_tp()`（读 `tp` 寄存器）。`start()` 在 M 态时将 hartid 写入 `tp`，S 态通过 `tp` 获取
+- **教训**：HAL 包装函数必须注意 CSR 的特权级访问权限。`tp` 寄存器跨特权级可用，是传递 hartid 的正确方式
+
+#### 当前 HAL 接口覆盖清单
+
+| HAL 声明 | RISC-V 实现 | 类型 | 内核已迁移 |
+|---|---|---|---|
+| `hal_get_hartid()` | `r_tp()` | 内联 | ✅ |
+| `hal_read_scause()` 等 13 个 CSR 函数 | `r_*()/w_*()` | 内联 | ✅ trap.c |
+| `hal_intr_on/off/get()` | `intr_on/off/get()` | 内联 | ✅ proc.c, trap.c |
+| `hal_irq_init/hart_init/claim/complete()` | `plic*()` | C 函数 | ✅ main.c, trap.c |
+| `hal_get_time/set_timer()` | `r_time/w_stimecmp()` | 内联 | ✅ trap.c |
+| `hal_timer_init()` | `timerinit()` | C 函数 | 就绪，start() 用原名 |
+| `hal_tlb_flush_all()` | `sfence_vma()` | 内联 | 就绪，vm.c 用原名 |
+| `hal_console_init/putchar_sync/putchar/getchar/console_intr()` | `uart*()` | C 函数 | ✅ console.c, trap.c |
+| `hal_switch()` | `swtch`（汇编） | ASM | ✅ proc.c |
+
+> LoongArch 移植时只需实现以上 hal_ 前缀函数，内核通用代码无需任何修改。
+
 
 ### 🚀 下一步（第4周）
 1. 搭建 LoongArch 开发环境
@@ -276,4 +327,4 @@ void hal_start(void);
 4.  **输出格式**：
     - 代码块必须标明语言（如 `c` `makefile`）。
     - 重要的命令或配置，用 `>` 单独列出，方便复制执行。
-*最后更新：2026-05-02 | 项目阶段：第3周完成，RISC-V HAL 全部接口就绪，准备第4周 LoongArch*
+*最后更新：2026-05-27 | 项目阶段：第3周收尾，HAL 接口命名统一完成（含 bug 修复），19 个 HAL 文件 1561 行，usertests 全通过。第4周：搭建 LoongArch 开发环境*

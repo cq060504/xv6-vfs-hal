@@ -339,6 +339,27 @@ sfence_vma()
 typedef uint64 pte_t;
 typedef uint64 *pagetable_t; // 512 PTEs
 
+// ---- HAL unified interface wrappers (inline) ----
+static inline uint64 hal_get_hartid(void)     { return r_tp(); }
+static inline uint64 hal_read_sstatus(void)   { return r_sstatus(); }
+static inline void   hal_write_sstatus(uint64 x) { w_sstatus(x); }
+static inline uint64 hal_read_sepc(void)      { return r_sepc(); }
+static inline void   hal_write_sepc(uint64 x) { w_sepc(x); }
+static inline uint64 hal_read_scause(void)    { return r_scause(); }
+static inline uint64 hal_read_stval(void)     { return r_stval(); }
+static inline uint64 hal_read_stvec(void)     { return r_stvec(); }
+static inline void   hal_write_stvec(uint64 x) { w_stvec(x); }
+static inline uint64 hal_read_satp(void)      { return r_satp(); }
+static inline void   hal_write_satp(uint64 x) { w_satp(x); }
+static inline uint64 hal_read_sp(void)        { return r_sp(); }
+static inline uint64 hal_read_ra(void)        { return r_ra(); }
+static inline uint64 hal_get_time(void)       { return r_time(); }
+static inline void   hal_set_timer(uint64 next) { w_stimecmp(next); }
+static inline void   hal_tlb_flush_all(void)  { sfence_vma(); }
+static inline void   hal_intr_on(void)        { intr_on(); }
+static inline void   hal_intr_off(void)       { intr_off(); }
+static inline int    hal_intr_get(void)       { return intr_get(); }
+
 #endif // __ASSEMBLER__
 
 #define PGSIZE 4096 // bytes per page

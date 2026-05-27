@@ -66,3 +66,6 @@ timerinit()
   // ask for the very first timer interrupt.
   w_stimecmp(r_time() + 1000000);
 }
+
+// ---- HAL unified interface wrapper ----
+void hal_timer_init(void) { timerinit(); }

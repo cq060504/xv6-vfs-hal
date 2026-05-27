@@ -63,7 +63,7 @@ procinit(void)
 int
 cpuid()
 {
-  int id = r_tp();
+  int id = hal_get_hartid();
   return id;
 }
 
@@ -380,7 +380,7 @@ kwait(uint64 addr)
     havekids = 0;
     for(pp = proc; pp < &proc[NPROC]; pp++){
       if(pp->parent == p){
-        // make sure the child isn't still in exit() or swtch().
+        // make sure the child isn't still in exit() or hal_switch().
         acquire(&pp->lock);
 
         havekids = 1;
@@ -433,8 +433,8 @@ scheduler(void)
     // processes are waiting. Then turn them back off
     // to avoid a possible race between an interrupt
     // and wfi.
-    intr_on();
-    intr_off();
+    hal_intr_on();
+    hal_intr_off();
 
     int found = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
@@ -445,7 +445,7 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
-        swtch(&c->context, &p->context);
+        hal_switch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
@@ -480,11 +480,11 @@ sched(void)
     panic("sched locks");
   if(p->state == RUNNING)
     panic("sched RUNNING");
-  if(intr_get())
+  if(hal_intr_get())
     panic("sched interruptible");
 
   intena = mycpu()->intena;
-  swtch(&p->context, &mycpu()->context);
+  hal_switch(&p->context, &mycpu()->context);
   mycpu()->intena = intena;
 }
 

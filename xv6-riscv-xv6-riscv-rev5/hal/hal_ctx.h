@@ -25,7 +25,7 @@ struct hal_context {
   uint64 s11;
 };
 
-// Save *old, load *new.
-void hal_switch(struct hal_context **old, struct hal_context *new);
+// Save current registers in old, load from new.
+void hal_switch(struct hal_context *old, struct hal_context *new);
 
 #endif
