@@ -444,3 +444,34 @@ loongarch64-linux-gnu-gdb vmlinux -ex "target remote :1234"
 3. **本周**：按第1周计划阅读源码，完成代码标注
 
 有任何具体问题（比如某个 RISC-V CSR 怎么对应 LoongArch 的寄存器、某段汇编怎么改），随时告诉我，我可以给出具体的代码实现。祝项目顺利！
+
+---
+
+## 八、最新进展（2026-05-27）
+
+### ✅ HAL 接口命名统一（第3周收尾）
+
+**目标**：将内核调用统一到 `hal_` 前缀接口，为 LoongArch 移植提供清晰的实现契约。
+
+**实现策略**：薄包装（thin wrapper）——在 RISC-V 平台代码中添加 `hal_` 前缀函数转发到原有实现，同时更新内核调用点。
+
+**代码规模**：
+- HAL 接口头文件：8 个，179 行
+- RISC-V 平台实现：11 个文件，1382 行
+- 总计：19 个文件，1561 行
+
+**已验证**：
+- ✅ `make qemu` 正常启动（xv6 kernel is booting，3 hart 启动）
+- ✅ `usertests` 全部通过（ALL TESTS PASSED）
+- ✅ 崩溃恢复测试通过（log/forphan/dorphan）
+
+### 🐛 已修复 Bug
+
+| Bug | 症状 | 根因 | 修复 |
+|---|---|---|---|
+| hal_get_hartid 特权级错误 | 内核静默崩溃，无输出 | `hal_get_hartid()` → `r_mhartid()` 读 M 态 CSR，S 态不可访问 | 改为 `r_tp()` 读 tp 寄存器 |
+
+### 🚀 下一步（第4周）
+1. 搭建 LoongArch 开发环境（交叉编译工具链 + QEMU 7.1+）
+2. 编写 LoongArch 最小启动代码（arch.h + memlayout.h + hal_entry.S）
+3. 目标：能进入 main() 并完成基本初始化
