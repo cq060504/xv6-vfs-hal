@@ -31,6 +31,7 @@ vfs_init(void)
   nmount = 0;
   nfstype = 0;
   vfs_register(xv6fs_mount, "xv6fs");
+  vfs_register(ext2_mount, "ext2");
 }
 
 void
@@ -49,11 +50,38 @@ vfs_root(void)
   return vget(mounttable[0]->root);
 }
 
+// Find the mount whose mountpoint == vp (i.e., a filesystem mounted ON this directory).
+// Used when descending into a directory that is a mountpoint.
+struct mount*
+vfs_lookup_mount(struct vnode *vp)
+{
+  int i;
+  for(i = 1; i < nmount; i++){   // skip mounttable[0] (root mount, mountpoint==NULL)
+    if(mounttable[i]->mountpoint == vp)
+      return mounttable[i];
+  }
+  return 0;
+}
+
+// Find the mount whose root == vp (i.e., this vnode IS the root of some mounted FS).
+// Used when going ".." from a mount root.
+struct mount*
+vfs_find_mountpoint(struct vnode *vp)
+{
+  int i;
+  for(i = 1; i < nmount; i++){
+    if(mounttable[i]->root == vp)
+      return mounttable[i];
+  }
+  return 0;
+}
+
 struct mount*
 vfs_mount(char *path, uint dev, char *fstype)
 {
   int i;
   struct mount *mp = 0;
+  struct vnode *mpoint = 0;
 
   for(i = 0; i < nfstype; i++){
     if(strncmp(fstypes[i].name, fstype, 16) == 0){
@@ -63,32 +91,38 @@ vfs_mount(char *path, uint dev, char *fstype)
   }
   if(mp == 0) return 0;
 
+  // Resolve mountpoint path to a vnode (except for root mount)
+  if(strncmp(path, "/", 128) == 0){
+    mp->mountpoint = 0;  // root mount has no parent mountpoint
+  } else {
+    mpoint = vfs_namei(path);
+    if(mpoint == 0 || mpoint->type != V_DIR){
+      if(mpoint) vput(mpoint);
+      mp->ops = 0;  // let caller free — we don't have a destructor for mount itself yet
+      return 0;
+    }
+    // Check nothing is already mounted here
+    for(i = 1; i < nmount; i++){
+      if(mounttable[i]->mountpoint == mpoint){
+        vput(mpoint);
+        mp->ops = 0;
+        return 0;
+      }
+    }
+    mp->mountpoint = mpoint;  // vput when unmounting
+  }
+
   safestrcpy(mp->path, path, 128);
   mp->dev = dev;
 
-  if(nmount >= NMOUNT) return 0;
+  if(nmount >= NMOUNT){
+    if(mpoint) vput(mpoint);
+    mp->ops = 0;
+    return 0;
+  }
   mounttable[nmount] = mp;
   nmount++;
   return mp;
-}
-
-struct mount*
-vfs_lookup_mount(char *path, char **rest)
-{
-  int i, best = -1, bestlen = 0;
-  for(i = 0; i < nmount; i++){
-    int len = strlen(mounttable[i]->path);
-    if(len > bestlen && strncmp(mounttable[i]->path, path, len) == 0){
-      if(len == 1 || path[len] == '/' || path[len] == '\0'){
-        best = i;
-        bestlen = len;
-      }
-    }
-  }
-  if(best < 0) return 0;
-  *rest = path + bestlen;
-  if(**rest == '/') (*rest)++;
-  return mounttable[best];
 }
 
 struct vnode*
@@ -144,17 +178,8 @@ vput(struct vnode *vp)
   }
   release(&vnode_lock);
 
-  // Must call destroy outside spinlock (may sleep)
   if(need_free && destroy)
     destroy(priv);
-}
-
-void
-free_vnode(struct vnode *vp)
-{
-  // free_vnode is only called when we know ref is already 0
-  // and we hold no lock. Just call vput which handles cleanup.
-  vput(vp);
 }
 
 void
@@ -169,18 +194,15 @@ vn_unlock(struct vnode *vp)
   releasesleep(&vp->lock);
 }
 
-// Resolve relative/absolute paths.
-// For absolute paths: find mount, start from root.
-// For relative paths: start from cwd.
+// Starting point for absolute paths: always mounttable[0]->root (the global root).
+// Mount-point crossing happens during traversal in vfs_namei.
 static struct vnode*
 path_start(char *path, char **rest)
 {
-  struct mount *mp;
-
   if(*path == '/'){
-    mp = vfs_lookup_mount(path, rest);
-    if(mp == 0) return 0;
-    return vget(mp->root);
+    if(nmount == 0) return 0;
+    *rest = path;
+    return vget(mounttable[0]->root);
   }
   // Relative path: start from cwd
   struct proc *p = myproc();
@@ -207,12 +229,26 @@ skipelem(char *path, char *name)
   return path;
 }
 
+// Cross a vnode that may be a mountpoint. If vp has a filesystem mounted on it,
+// return that mount's root (with ref held). Otherwise return vp (with ref held).
+// Consumes vp's reference.
+static struct vnode*
+cross_mount(struct vnode *vp)
+{
+  struct mount *submp;
+  submp = vfs_lookup_mount(vp);
+  if(submp){
+    vput(vp);
+    return vget(submp->root);
+  }
+  return vp;
+}
+
 struct vnode*
 vfs_namei(char *path)
 {
   char name[15];
   struct vnode *vp, *next;
-  struct mount *submp;
   char *rest;
 
   vp = path_start(path, &rest);
@@ -223,6 +259,17 @@ vfs_namei(char *path)
     if(vp->type != V_DIR){
       vn_unlock(vp); vput(vp); return 0;
     }
+
+    // ".." from a mount root: cross back to parent filesystem
+    if(strncmp(name, "..", 15) == 0 && vp->mp && vp->mp->mountpoint &&
+       vp == vp->mp->root){
+      next = vget(vp->mp->mountpoint);
+      vn_unlock(vp);
+      vput(vp);
+      vp = next;
+      continue;
+    }
+
     if(vp->ops == 0 || vp->ops->lookup == 0){
       vn_unlock(vp); vput(vp); return 0;
     }
@@ -232,23 +279,8 @@ vfs_namei(char *path)
     vn_unlock(vp);
     vput(vp);
 
-    // Check if we crossed a mount point
-    // Build the full path so far and look for a mount
-    // In practice, we check if the resulting vnode is a mount root
-    // A simpler approach: just use vget on the result
-    submp = 0;
-    for(int i = 1; i < nmount; i++){
-      if(mounttable[i]->root == next){
-        submp = mounttable[i];
-        break;
-      }
-    }
-    if(submp){
-      vput(next);
-      vp = vget(submp->root);
-    } else {
-      vp = next;
-    }
+    // Cross into mountpoint if directory has another FS mounted on it
+    vp = cross_mount(next);
   }
   return vp;
 }
@@ -258,7 +290,6 @@ vfs_nameiparent(char *path, char *name)
 {
   char buf[15];
   struct vnode *vp, *next;
-  struct mount *submp;
   char *rest;
 
   vp = path_start(path, &rest);
@@ -277,6 +308,17 @@ vfs_nameiparent(char *path, char *name)
     if(vp->type != V_DIR){
       vn_unlock(vp); vput(vp); return 0;
     }
+
+    // ".." from a mount root: cross back to parent filesystem
+    if(strncmp(buf, "..", 15) == 0 && vp->mp && vp->mp->mountpoint &&
+       vp == vp->mp->root){
+      next = vget(vp->mp->mountpoint);
+      vn_unlock(vp);
+      vput(vp);
+      vp = next;
+      continue;
+    }
+
     if(vp->ops == 0 || vp->ops->lookup == 0){
       vn_unlock(vp); vput(vp); return 0;
     }
@@ -286,19 +328,7 @@ vfs_nameiparent(char *path, char *name)
     vn_unlock(vp);
     vput(vp);
 
-    submp = 0;
-    for(int i = 1; i < nmount; i++){
-      if(mounttable[i]->root == next){
-        submp = mounttable[i];
-        break;
-      }
-    }
-    if(submp){
-      vput(next);
-      vp = vget(submp->root);
-    } else {
-      vp = next;
-    }
+    vp = cross_mount(next);
   }
   vput(vp);
   return 0;
@@ -322,12 +352,10 @@ vfs_open(char *path, int mode, struct vnode **vp)
       return -1;
     }
   }
-  // O_CREATE on an existing directory should fail
   if((mode & O_CREATE) && ip->type == V_DIR){
     vput(ip);
     return -1;
   }
-  // Reject write-open on directories (O_WRONLY or O_RDWR)
   if(ip->type == V_DIR && (mode & (O_WRONLY | O_RDWR))){
     vput(ip);
     return -1;
@@ -400,6 +428,8 @@ vfs_mkdir(struct vnode *dir, char *name)
 int
 vfs_link(struct vnode *old, struct vnode *newdir, char *name)
 {
+  // Cross-filesystem hard links are forbidden
+  if(old->mp != newdir->mp) return -1;
   if(newdir->type != V_DIR) return -1;
   if(newdir->ops == 0 || newdir->ops->link == 0) return -1;
   vn_lock(newdir);

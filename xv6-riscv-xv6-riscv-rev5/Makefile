@@ -27,7 +27,8 @@ K_OBJS = \
   $K/exec.o \
   $K/sysfile.o \
   $K/vfs.o \
-  $K/xv6fs.o
+  $K/xv6fs.o \
+  $K/ext2.o
 
 # Platform-specific objects (compiled from hal/$(ARCH)/)
 ARCH_OBJS = \

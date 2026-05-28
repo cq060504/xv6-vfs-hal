@@ -26,23 +26,24 @@ struct vfs_ops {
 
 struct vnode {
   uint type;
-  uint dev;
+  uint dev;          // inherited from mp->dev at creation; mp->dev is authoritative
   int major;
   int minor;
   struct vnode_ops *ops;
-  struct mount *mp;
+  struct mount *mp;  // owning mount; NULL while ref==0 (freed)
   int ref;
   struct sleeplock lock;
-  uint inum;
-  void *priv;
+  uint inum;         // FS-specific inode number; meaningful only within mp
+  void *priv;        // FS-private data (e.g. struct inode*)
 };
 
 struct mount {
   struct vfs_ops *ops;
-  struct vnode *root;
-  uint dev;
-  char path[128];
-  void *priv;
+  struct vnode *root;       // root vnode of this filesystem
+  struct vnode *mountpoint; // parent vnode where this FS is attached; NULL for root mount
+  uint dev;                 // authoritative device number for all I/O within this mount
+  char path[128];           // human-readable mount path (debugging only; use mountpoint for logic)
+  void *priv;               // FS-private mount data (e.g. superblock)
 };
 
 #define V_FILE 1
@@ -70,14 +71,14 @@ void          vfs_init(void);
 struct vnode* vfs_root(void);
 
 struct vnode* alloc_vnode(void);
-void          free_vnode(struct vnode*);
 struct vnode* vget(struct vnode*);
 void          vput(struct vnode*);
 void          vn_lock(struct vnode*);
 void          vn_unlock(struct vnode*);
 
 struct mount* vfs_mount(char*, uint, char*);
-struct mount* vfs_lookup_mount(char*, char**);
+struct mount* vfs_lookup_mount(struct vnode*);
+struct mount* vfs_find_mountpoint(struct vnode*);
 
 struct vnode* vfs_namei(char*);
 struct vnode* vfs_nameiparent(char*, char*);
@@ -98,3 +99,4 @@ int           vfs_truncate(struct vnode*);
 
 void          vfs_register(struct mount* (*)(uint), char*);
 struct mount* xv6fs_mount(uint);
+struct mount* ext2_mount(uint);
