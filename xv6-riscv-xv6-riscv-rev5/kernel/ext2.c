@@ -24,6 +24,7 @@ struct ext2_mount_priv {
   struct ext2_bgdesc     bg;
   uint                   dev;
   struct sleeplock       lock;   // serialize meta-data allocations (balloc/ialloc)
+  struct mount          *mnt;    // back-pointer to VFS mount (set by ext2_mount)
 };
 
 // Per-vnode private data
@@ -71,6 +72,21 @@ write_inode(struct ext2_mount_priv *mp, uint inum, struct ext2_inode_disk *ino)
 }
 
 // ---------------------------------------------------------------------------
+// timestamp helper (B6: update i_atime/i_mtime/i_ctime)
+// ---------------------------------------------------------------------------
+static void
+ext2_update_time(struct ext2_vnode_priv *priv, int access, int mod)
+{
+  uint t = ticks;
+  if(access) priv->ino.i_atime = t;
+  if(mod){
+    priv->ino.i_mtime = t;
+    priv->ino.i_ctime = t;
+  }
+  if(access || mod) priv->dirty = 1;
+}
+
+// ---------------------------------------------------------------------------
 // vnode pool (protected by vnode_lock in vfs.c)
 // ---------------------------------------------------------------------------
 static struct vnode*
@@ -91,11 +107,19 @@ ext2_vnode_alloc(struct ext2_mount_priv *mp, uint inum, struct ext2_inode_disk *
   if(mode == 0x4000)      vp->type = V_DIR;
   else if(mode == 0x2000 || mode == 0x6000) vp->type = V_DEV;
   else if(mode == 0x8000) vp->type = V_FILE;
-  else                    vp->type = V_FILE;  // default
+  else                    vp->type = V_FILE;  // default (symlink/socket treated as file)
 
-  vp->major = 0;
-  vp->minor = 0;
+  // B5: recover major/minor from i_block[0] for device nodes
+  if(vp->type == V_DEV){
+    vp->major = (ino->i_block[0] >> 8) & 0xFF;
+    vp->minor = ino->i_block[0] & 0xFF;
+  } else {
+    vp->major = 0;
+    vp->minor = 0;
+  }
+
   vp->dev   = mp->dev;
+  vp->mp    = mp->mnt;
   vp->ops   = &ext2_vnops;
   vp->priv  = priv;
   vp->inum  = inum;
@@ -121,16 +145,6 @@ ext2_iget(struct ext2_mount_priv *mp, uint inum)
   struct ext2_inode_disk ino;
   if(read_inode(mp, inum, &ino) < 0) return 0;
   return ext2_vnode_alloc(mp, inum, &ino);
-}
-
-// sync a dirty inode back to disk
-static void
-ext2_iupdate(struct ext2_vnode_priv *priv)
-{
-  if(priv->dirty && priv->mp){
-    write_inode(priv->mp, priv->inum, &priv->ino);
-    priv->dirty = 0;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,15 +174,30 @@ bitmap_alloc(struct ext2_mount_priv *mp, uint bb, uint nbits)
   return -1;
 }
 
+// B1: bitmap_free now acquires the same lock as bitmap_alloc
 static void
 bitmap_free(struct ext2_mount_priv *mp, uint bb, uint n)
 {
   struct buf *bp = bread(mp->dev, bb);
   if(bp == 0) return;
+  acquiresleep(&mp->lock);
   uint byte = n / 8, bit = n % 8;
   bp->data[byte] &= ~(1 << bit);
   bwrite(bp);
+  releasesleep(&mp->lock);
   brelse(bp);
+}
+
+// Write superblock out to disk.  Caller must hold mp->lock.
+static void
+ext2_sb_write(struct ext2_mount_priv *mp)
+{
+  struct buf *sbp = bread(mp->dev, 1);
+  if(sbp){
+    memmove(sbp->data, &mp->sb, sizeof(mp->sb));
+    bwrite(sbp);
+    brelse(sbp);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -179,15 +208,9 @@ ext2_balloc(struct ext2_mount_priv *mp)
 {
   int b = bitmap_alloc(mp, mp->bg.bg_block_bitmap, mp->sb.s_blocks_count);
   if(b < 0) return 0;
-  // Update superblock free count
   acquiresleep(&mp->lock);
   mp->sb.s_free_blocks_count--;
-  struct buf *sbp = bread(mp->dev, 1);
-  if(sbp){
-    memmove(sbp->data, &mp->sb, sizeof(mp->sb));
-    bwrite(sbp);
-    brelse(sbp);
-  }
+  ext2_sb_write(mp);
   releasesleep(&mp->lock);
   return (uint)b;
 }
@@ -198,12 +221,7 @@ ext2_bfree(struct ext2_mount_priv *mp, uint blockno)
   bitmap_free(mp, mp->bg.bg_block_bitmap, blockno);
   acquiresleep(&mp->lock);
   mp->sb.s_free_blocks_count++;
-  struct buf *sbp = bread(mp->dev, 1);
-  if(sbp){
-    memmove(sbp->data, &mp->sb, sizeof(mp->sb));
-    bwrite(sbp);
-    brelse(sbp);
-  }
+  ext2_sb_write(mp);
   releasesleep(&mp->lock);
 }
 
@@ -224,17 +242,18 @@ ext2_ialloc(struct ext2_mount_priv *mp, ushort mode)
   ino->i_mode = mode;
   ino->i_links_count = 0;
   ino->i_size = 0;
+
+  // B6: set creation timestamp
+  ino->i_atime = ticks;
+  ino->i_mtime = ticks;
+  ino->i_ctime = ticks;
+
   bwrite(bp);
   brelse(bp);
 
   acquiresleep(&mp->lock);
   mp->sb.s_free_inodes_count--;
-  struct buf *sbp = bread(mp->dev, 1);
-  if(sbp){
-    memmove(sbp->data, &mp->sb, sizeof(mp->sb));
-    bwrite(sbp);
-    brelse(sbp);
-  }
+  ext2_sb_write(mp);
   releasesleep(&mp->lock);
   return (uint)inum;
 }
@@ -245,12 +264,7 @@ ext2_ifree(struct ext2_mount_priv *mp, uint inum)
   bitmap_free(mp, mp->bg.bg_inode_bitmap, inum);
   acquiresleep(&mp->lock);
   mp->sb.s_free_inodes_count++;
-  struct buf *sbp = bread(mp->dev, 1);
-  if(sbp){
-    memmove(sbp->data, &mp->sb, sizeof(mp->sb));
-    bwrite(sbp);
-    brelse(sbp);
-  }
+  ext2_sb_write(mp);
   releasesleep(&mp->lock);
 }
 
@@ -269,6 +283,8 @@ ext2_bmap(struct ext2_vnode_priv *priv, uint lbn, int alloc)
     if(ino->i_block[lbn] == 0 && alloc){
       ino->i_block[lbn] = ext2_balloc(mp);
       if(ino->i_block[lbn] == 0) return 0;
+      // B7: each new block adds 2 sectors (1024/512) to i_blocks
+      ino->i_blocks += 2;
       priv->dirty = 1;
     }
     return ino->i_block[lbn];
@@ -277,11 +293,23 @@ ext2_bmap(struct ext2_vnode_priv *priv, uint lbn, int alloc)
 
   // single indirect
   if(lbn < EXT2_NINDIRECT){
+    uint iblk;
     if(ino->i_block[12] == 0 && alloc){
-      ino->i_block[12] = ext2_balloc(mp);
-      if(ino->i_block[12] == 0) return 0;
-      bp = bread(mp->dev, ino->i_block[12]);
-      if(bp){ memset(bp->data, 0, BSIZE); bwrite(bp); brelse(bp); }
+      iblk = ext2_balloc(mp);
+      if(iblk == 0) return 0;
+      ino->i_block[12] = iblk;
+      ino->i_blocks += 2;   // B7: indirect block itself
+      // B4: rollback on bread failure
+      bp = bread(mp->dev, iblk);
+      if(bp == 0){
+        ext2_bfree(mp, iblk);
+        ino->i_block[12] = 0;
+        ino->i_blocks -= 2;
+        return 0;
+      }
+      memset(bp->data, 0, BSIZE);
+      bwrite(bp);
+      brelse(bp);
       priv->dirty = 1;
     }
     if(ino->i_block[12] == 0) return 0;
@@ -290,7 +318,11 @@ ext2_bmap(struct ext2_vnode_priv *priv, uint lbn, int alloc)
     indirect = (uint*)bp->data;
     if(indirect[lbn] == 0 && alloc){
       indirect[lbn] = ext2_balloc(mp);
-      if(indirect[lbn]){ bwrite(bp); }
+      if(indirect[lbn]){
+        ino->i_blocks += 2;   // B7
+        bwrite(bp);
+        priv->dirty = 1;
+      }
     }
     uint ret = indirect[lbn];
     brelse(bp);
@@ -359,6 +391,11 @@ ext2_dir_add(struct vnode *dir, char *name, uint inum, uchar ftype)
     uint boff = off % BSIZE;
     while(boff < BSIZE){
       struct ext2_dir_entry *de = (struct ext2_dir_entry*)(bp->data + boff);
+      // B3: guard against corrupt entry with rec_len == 0
+      if(de->rec_len == 0){
+        brelse(bp);
+        return -1;
+      }
       uint reclen = de->rec_len;
       uint real_len = sizeof(struct ext2_dir_entry) + de->name_len;
       real_len = (real_len + 3) & ~3;
@@ -439,6 +476,8 @@ ext2_i_truncate(struct ext2_vnode_priv *priv)
     ino->i_block[12] = 0;
   }
 
+  // B7: reset i_blocks to 0 after freeing all blocks
+  ino->i_blocks = 0;
   ino->i_size = 0;
   priv->dirty = 1;
 }
@@ -450,6 +489,9 @@ ext2_i_truncate(struct ext2_vnode_priv *priv)
 static int
 ext2_lookup(struct vnode *dir, char *name, struct vnode **result)
 {
+  struct ext2_vnode_priv *dp = (struct ext2_vnode_priv*)dir->priv;
+  // B6: update access time on directory lookup
+  ext2_update_time(dp, 1, 0);
   return ext2_dir_lookup(dir, name, result);
 }
 
@@ -480,6 +522,8 @@ ext2_read(struct vnode *vp, uint64 buf, int n, uint off)
     total += len;
     off   += len;
   }
+  // B6: update access time on read
+  ext2_update_time(priv, 1, 0);
   return total;
 }
 
@@ -512,6 +556,8 @@ ext2_write(struct vnode *vp, uint64 buf, int n, uint off)
     ino->i_size = off;
     priv->dirty = 1;
   }
+  // B6: update modification time on write
+  ext2_update_time(priv, 0, 1);
   return total;
 }
 
@@ -580,6 +626,9 @@ ext2_create(struct vnode *dir, char *name, short type, struct vnode **new)
   struct ext2_mount_priv *mp = dp->mp;
   ushort mode = (type == V_DIR) ? 0x4000 : 0x8000;
 
+  // B6: update modification time on directory change
+  ext2_update_time(dp, 0, 1);
+
   // Check name doesn't exist already
   struct vnode *exist;
   if(ext2_dir_lookup(dir, name, &exist) == 0){
@@ -590,12 +639,10 @@ ext2_create(struct vnode *dir, char *name, short type, struct vnode **new)
   uint inum = ext2_ialloc(mp, mode);
   if(inum == 0) return -1;
 
-  // Initialise inode
+  // Initialise inode links count (timestamps already set by ialloc)
   struct ext2_inode_disk ino;
-  memset(&ino, 0, sizeof(ino));
-  ino.i_mode = mode;
+  read_inode(mp, inum, &ino);
   ino.i_links_count = 1;
-  ino.i_size = 0;
   write_inode(mp, inum, &ino);
 
   // Add directory entry
@@ -634,6 +681,9 @@ ext2_unlink(struct vnode *dir, char *name)
   struct ext2_inode_disk *dino = &dp->ino;
   uint off = 0;
 
+  // B6: update modification time
+  ext2_update_time(dp, 0, 1);
+
   while(off < dino->i_size){
     uint blk = ext2_bmap(dp, off / BSIZE, 0);
     if(blk == 0) return -1;
@@ -651,9 +701,14 @@ ext2_unlink(struct vnode *dir, char *name)
         int is_dir = ((ino.i_mode & 0xF000) == 0x4000);
 
         if(is_dir){
-          // Check directory is empty (only . and ..)
+          // B2: must ensure vdir is valid before proceeding
           struct vnode *vdir = ext2_iget(dp->mp, inum);
-          if(vdir){
+          if(vdir == 0){
+            // Cannot even read the directory — refuse to unlink
+            brelse(bp);
+            return -1;
+          }
+          {
             struct ext2_vnode_priv *vdp = (struct ext2_vnode_priv*)vdir->priv;
             uint doff = 0;
             int empty = 1;
@@ -662,9 +717,9 @@ ext2_unlink(struct vnode *dir, char *name)
               struct buf *dbp = bread(dp->mp->dev, dblk);
               uint dboff = doff % BSIZE;
               struct ext2_dir_entry *dde = (struct ext2_dir_entry*)(dbp->data + dboff);
-              if(dde->inode != 0 &&
-                 strncmp(dde->name, ".", 1) != 0 &&
-                 strncmp(dde->name, "..", 2) != 0){
+              int is_dot  = (dde->name_len == 1 && dde->name[0] == '.');
+              int is_dotdot = (dde->name_len == 2 && dde->name[0] == '.' && dde->name[1] == '.');
+              if(dde->inode != 0 && !is_dot && !is_dotdot){
                 empty = 0;
                 brelse(dbp);
                 break;
@@ -695,6 +750,8 @@ ext2_unlink(struct vnode *dir, char *name)
             vput(victim);
           }
         } else {
+          // B6: update ctime on link count change
+          ino.i_ctime = ticks;
           write_inode(dp->mp, inum, &ino);
         }
         return 0;
@@ -720,12 +777,25 @@ static int
 ext2_link(struct vnode *dir, char *name, struct vnode *old)
 {
   struct ext2_vnode_priv *opriv = (struct ext2_vnode_priv*)old->priv;
+  struct ext2_vnode_priv *dp = (struct ext2_vnode_priv*)dir->priv;
 
   if((opriv->ino.i_mode & 0xF000) == 0x4000)
     return -1;  // can't hardlink directories
 
+  // Check target name doesn't exist already
+  struct vnode *exist;
+  if(ext2_dir_lookup(dir, name, &exist) == 0){
+    vput(exist);
+    return -1;
+  }
+
   opriv->ino.i_links_count++;
+  // B6: update ctime
+  opriv->ino.i_ctime = ticks;
   opriv->dirty = 1;
+
+  // B6: update mtime on directory
+  ext2_update_time(dp, 0, 1);
 
   if(ext2_dir_add(dir, name, opriv->inum, EXT2_FT_REG) < 0){
     opriv->ino.i_links_count--;
@@ -740,6 +810,9 @@ ext2_mknod(struct vnode *dir, char *name, int major, int minor)
 {
   struct ext2_vnode_priv *dp = (struct ext2_vnode_priv*)dir->priv;
   struct ext2_mount_priv *mp = dp->mp;
+
+  // B6: update modification time
+  ext2_update_time(dp, 0, 1);
 
   struct vnode *exist;
   if(ext2_dir_lookup(dir, name, &exist) == 0){ vput(exist); return -1; }
@@ -785,6 +858,8 @@ ext2_read_kernel(struct vnode *vp, uint64 buf, int n, uint off)
     total += len;
     off   += len;
   }
+  // B6: update access time
+  ext2_update_time(priv, 1, 0);
   return total;
 }
 
@@ -793,6 +868,8 @@ ext2_truncate(struct vnode *vp)
 {
   struct ext2_vnode_priv *priv = (struct ext2_vnode_priv*)vp->priv;
   ext2_i_truncate(priv);
+  // B6: update modification time
+  ext2_update_time(priv, 0, 1);
   return 0;
 }
 
@@ -849,6 +926,7 @@ ext2_mount(uint dev)
   mp->ops  = &ext2_vfsops;
   mp->dev  = dev;
   mp->priv = priv;
+  priv->mnt = mp;  // back-pointer for vnode.mp
 
   // Get root inode
   mp->root = ext2_iget(priv, EXT2_ROOT_INO);

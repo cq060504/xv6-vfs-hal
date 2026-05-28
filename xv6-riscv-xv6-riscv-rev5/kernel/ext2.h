@@ -8,7 +8,7 @@ struct ext2_superblock {
   uint s_r_blocks_count;
   uint s_free_blocks_count;
   uint s_free_inodes_count;
-  uint s_first_data_block;    // 0 if block_size=1024, 1 otherwise
+  uint s_first_data_block;    // 1 if block_size=1024, 0 otherwise
   uint s_log_block_size;      // 0 => 1024 bytes
   uint s_log_frag_size;
   uint s_blocks_per_group;
