@@ -11,6 +11,7 @@
 #include "sleeplock.h"
 #include "proc.h"
 #include "stat.h"
+#include "fs.h"
 #include "buf.h"
 #include "vfs.h"
 #include "ext2.h"
@@ -41,7 +42,8 @@ struct ext2_vnode_priv {
 static uint
 ino_block(struct ext2_mount_priv *mp, uint inum)
 {
-  return mp->bg.bg_inode_table + (inum - 1) / (BSIZE / sizeof(struct ext2_inode_disk));
+  uint blk = mp->bg.bg_inode_table + (inum - 1) / (BSIZE / sizeof(struct ext2_inode_disk));
+  return blk;
 }
 
 static uint
@@ -159,10 +161,8 @@ bitmap_alloc(struct ext2_mount_priv *mp, uint bb, uint nbits)
   if(bp == 0) return -1;
   acquiresleep(&mp->lock);
   for(uint i = 1; i < nbits && i < BSIZE*8; i++){
-    uint byte = i / 8;
-    uint bit  = i % 8;
-    if((bp->data[byte] & (1 << bit)) == 0){
-      bp->data[byte] |= (1 << bit);
+    if((bp->data[i / 8] & (1 << (i % 8))) == 0){
+      bp->data[i / 8] |= (1 << (i % 8));
       bwrite(bp);
       releasesleep(&mp->lock);
       brelse(bp);
@@ -181,8 +181,7 @@ bitmap_free(struct ext2_mount_priv *mp, uint bb, uint n)
   struct buf *bp = bread(mp->dev, bb);
   if(bp == 0) return;
   acquiresleep(&mp->lock);
-  uint byte = n / 8, bit = n % 8;
-  bp->data[byte] &= ~(1 << bit);
+  bp->data[n / 8] &= ~(1 << (n % 8));
   bwrite(bp);
   releasesleep(&mp->lock);
   brelse(bp);
@@ -359,9 +358,9 @@ ext2_dir_lookup(struct vnode *dir, char *name, struct vnode **result)
         *result = ext2_iget(dp->mp, inum);
         return (*result == 0) ? -1 : 0;
       }
+      if(de->rec_len == 0){ brelse(bp); return -1; }
       boff += de->rec_len;
       off  += de->rec_len;
-      if(de->rec_len == 0) break;
     }
     brelse(bp);
   }
@@ -470,6 +469,8 @@ ext2_i_truncate(struct ext2_vnode_priv *priv)
         ext2_bfree(priv->mp, indirect[i]);
         indirect[i] = 0;
       }
+      // write back the zeroed indirect block before freeing
+      bwrite(bp);
       brelse(bp);
     }
     ext2_bfree(priv->mp, ino->i_block[12]);
@@ -485,6 +486,9 @@ ext2_i_truncate(struct ext2_vnode_priv *priv)
 // ===================================================================
 // vnode_ops implementations
 // ===================================================================
+
+// forward declarations for functions used before they are defined
+static int ext2_unlink(struct vnode *dir, char *name);
 
 static int
 ext2_lookup(struct vnode *dir, char *name, struct vnode **result)
@@ -508,13 +512,25 @@ ext2_read(struct vnode *vp, uint64 buf, int n, uint off)
 
   while(total < n){
     uint blk = ext2_bmap(priv, off / BSIZE, 0);
-    if(blk == 0) return -1;
     uint boff = off % BSIZE;
-    struct buf *bp = bread(priv->mp->dev, blk);
-    if(bp == 0) return -1;
     uint len = BSIZE - boff;
     if(len > n - total) len = n - total;
-    if(copyout(p->pagetable, buf + total, bp->data + boff, len) < 0){
+
+    if(blk == 0){
+      // sparse file hole: fill with zeroes
+      for(uint i = 0; i < len; i++){
+        if(copyout(p->pagetable, buf + total + i, "\0", 1) < 0)
+          return -1;
+      }
+      total += len;
+      off   += len;
+      continue;
+    }
+
+    struct buf *bp = bread(priv->mp->dev, blk);
+    if(bp == 0) return -1;
+    if(len > n - total) len = n - total;
+    if(copyout(p->pagetable, buf + total, (char *)(bp->data + boff), len) < 0){
       brelse(bp);
       return -1;
     }
@@ -543,7 +559,7 @@ ext2_write(struct vnode *vp, uint64 buf, int n, uint off)
     if(bp == 0) return -1;
     uint len = BSIZE - boff;
     if(len > n - total) len = n - total;
-    if(copyin(p->pagetable, bp->data + boff, buf + total, len) < 0){
+    if(copyin(p->pagetable, (char *)(bp->data + boff), buf + total, len) < 0){
       brelse(bp);
       return -1;
     }
@@ -601,6 +617,7 @@ ext2_readdir(struct vnode *vp, uint64 buf, uint off)
     if(bp == 0) return -1;
 
     struct ext2_dir_entry *de = (struct ext2_dir_entry*)(bp->data + boff);
+    if(de->rec_len == 0){ brelse(bp); return -1; }
     if(de->inode != 0){
       struct vdirent vde;
       vde.inum = de->inode;
@@ -655,10 +672,19 @@ ext2_create(struct vnode *dir, char *name, short type, struct vnode **new)
   if(type == V_DIR){
     // Create . and .. entries
     struct vnode *newdir = ext2_iget(mp, inum);
-    if(newdir){
+    if(newdir == 0){
+      // rollback: remove the dir entry we just added
+      ext2_unlink(dir, name);  // will free the just-allocated inode
+      return -1;
+    }
+    {
       struct ext2_vnode_priv *ndp = (struct ext2_vnode_priv*)newdir->priv;
-      ext2_dir_add(newdir, ".", inum, EXT2_FT_DIR);
-      ext2_dir_add(newdir, "..", dp->inum, EXT2_FT_DIR);
+      if(ext2_dir_add(newdir, ".", inum, EXT2_FT_DIR) < 0 ||
+         ext2_dir_add(newdir, "..", dp->inum, EXT2_FT_DIR) < 0){
+        vput(newdir);
+        ext2_unlink(dir, name);
+        return -1;
+      }
       ndp->ino.i_links_count = 2;  // . and ..
       ndp->dirty = 1;
       vput(newdir);
@@ -847,12 +873,19 @@ ext2_read_kernel(struct vnode *vp, uint64 buf, int n, uint off)
 
   while(total < n){
     uint blk = ext2_bmap(priv, off / BSIZE, 0);
-    if(blk == 0) return -1;
     uint boff = off % BSIZE;
-    struct buf *bp = bread(priv->mp->dev, blk);
-    if(bp == 0) return -1;
     uint len = BSIZE - boff;
     if(len > n - total) len = n - total;
+
+    if(blk == 0){
+      memset((void*)(buf + total), 0, len);
+      total += len;
+      off   += len;
+      continue;
+    }
+
+    struct buf *bp = bread(priv->mp->dev, blk);
+    if(bp == 0) return -1;
     memmove((void*)(buf + total), bp->data + boff, len);
     brelse(bp);
     total += len;
