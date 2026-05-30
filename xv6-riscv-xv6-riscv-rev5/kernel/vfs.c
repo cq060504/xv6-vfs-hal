@@ -57,7 +57,9 @@ vfs_lookup_mount(struct vnode *vp)
 {
   int i;
   for(i = 1; i < nmount; i++){   // skip mounttable[0] (root mount, mountpoint==NULL)
-    if(mounttable[i]->mountpoint == vp)
+    if(mounttable[i]->mountpoint &&
+       mounttable[i]->mountpoint->dev == vp->dev &&
+       mounttable[i]->mountpoint->inum == vp->inum)
       return mounttable[i];
   }
   return 0;
@@ -70,7 +72,9 @@ vfs_find_mountpoint(struct vnode *vp)
 {
   int i;
   for(i = 1; i < nmount; i++){
-    if(mounttable[i]->root == vp)
+    if(mounttable[i]->root &&
+       mounttable[i]->root->dev == vp->dev &&
+       mounttable[i]->root->inum == vp->inum)
       return mounttable[i];
   }
   return 0;

@@ -40,7 +40,7 @@ xv6fs_destroy(void *arg)
 }
 
 static struct vnode*
-xv6fs_vnode_from_inode(struct inode *ip, uint dev)
+xv6fs_vnode_from_inode(struct inode *ip, uint dev, struct mount *mp)
 {
   struct vnode *vp = alloc_vnode();
   struct xv6fs_vnode_priv *priv;
@@ -63,6 +63,7 @@ xv6fs_vnode_from_inode(struct inode *ip, uint dev)
   vp->major = ip->major;
   vp->minor = ip->minor;
   vp->dev = dev;
+  vp->mp = mp;
   vp->ops = &xv6fs_vnops;
   vp->priv = priv;
   vp->inum = ip->inum;
@@ -86,7 +87,7 @@ xv6fs_mount(uint dev)
 
   ip = iget(dev, ROOTINO);
   ilock(ip);
-  mp->root = xv6fs_vnode_from_inode(ip, dev);
+  mp->root = xv6fs_vnode_from_inode(ip, dev, mp);
   iunlock(ip);
   if(mp->root == 0){
     kfree((void*)mp);
@@ -119,7 +120,7 @@ xv6fs_lookup(struct vnode *dir, char *name, struct vnode **result)
   if(ip == 0) return -1;
 
   ilock(ip);
-  *result = xv6fs_vnode_from_inode(ip, dir->dev);
+  *result = xv6fs_vnode_from_inode(ip, dir->dev, dir->mp);
   iunlock(ip);
   if(*result == 0) return -1;
   return 0;
@@ -293,7 +294,7 @@ xv6fs_create(struct vnode *dir, char *name, short type, struct vnode **new)
 
   if(new){
     ilock(ip);
-    *new = xv6fs_vnode_from_inode(ip, dir->dev);
+    *new = xv6fs_vnode_from_inode(ip, dir->dev, dir->mp);
     iunlock(ip);
     if(*new == 0) return -1;
   }
