@@ -5,7 +5,6 @@
 
 volatile static int started = 0;
 
-// start() jumps here in supervisor mode on all CPUs.
 void
 main()
 {
@@ -27,7 +26,9 @@ main()
     iinit();         // inode table
     fileinit();      // file table
     virtio_disk_init(); // emulated hard disk
+    hal_timer_init();   // start timer after all init
     userinit();      // first user process
+    printf("main: userinit done, starting scheduler\n");
     __sync_synchronize();
     started = 1;
   } else {
@@ -35,10 +36,10 @@ main()
       ;
     __sync_synchronize();
     printf("hart %d starting\n", cpuid());
-    kvminithart();    // turn on paging
-    trapinithart();   // install kernel trap vector
-    hal_irq_hart_init();   // ask PLIC for device interrupts
+    kvminithart();
+    trapinithart();
+    hal_irq_hart_init();
   }
 
-  scheduler();        
+  scheduler();
 }

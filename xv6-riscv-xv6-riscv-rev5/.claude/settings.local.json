@@ -23,7 +23,9 @@
       "Bash(pkill -9 qemu)",
       "Bash(fuser fs.img)",
       "Bash(timeout --foreground 8 qemu-system-riscv64 -machine virt -bios none -kernel kernel/kernel -m 128M -smp 3 -nographic -serial mon:stdio -global virtio-mmio.force-legacy=false -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "WebSearch",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

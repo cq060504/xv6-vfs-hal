@@ -263,22 +263,62 @@ void hal_start(void);   // 平台初始化入口（main() 之前调用）
 
 ---
 
-## 四、LoongArch 环境搭建思路
+## 四、LoongArch 环境搭建（第4周核心任务）
 
-LoongArch 的 QEMU 和工具链需要单独安装。关键组件：
+### 4.1 为什么用 Docker？
 
-- **交叉编译器**：`loongarch64-linux-gnu-gcc`（或 `loongarch64-unknown-elf-gcc`）
-- **QEMU**：需要 `qemu-system-loongarch64`，QEMU 7.1+ 开始支持
-- **参考机器**：QEMU 的 `virt` 机器（LoongArch）
+- **隔离性**：LoongArch 工具链与 RISC-V 工具链完全隔离
+- **可复现**：Dockerfile 即文档，任何人可重建相同环境
+- **WSL2 友好**：Docker Desktop 在 WSL2 中运行良好
+- **一键切换**：通过 volume 挂载源码，宿主机编辑，容器内编译
 
-WSL2 下安装 LoongArch 工具链的大致步骤（第三、四周详细操作）：
-```bash
-# 方案一：从 Debian/Ubuntu 源（如果版本够新）
-sudo apt install gcc-loongarch64-linux-gnu qemu-system-misc
+### 4.2 Dockerfile（基于 Ubuntu 24.04）
 
-# 方案二：从龙芯官方下载预编译工具链
-# https://github.com/loongson/build-tools/releases
+```dockerfile
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc-loongarch64-linux-gnu \
+    g++-loongarch64-linux-gnu \
+    binutils-loongarch64-linux-gnu \
+    qemu-system-misc \
+    qemu-system-data \
+    gdb-multiarch \
+    make python3 perl git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /xv6
+CMD ["/bin/bash"]
 ```
+
+> 构建：`docker build -t xv6-loongarch -f Dockerfile.loongarch .`
+> 启动：`docker run -it --rm -v $(pwd):/xv6 xv6-loongarch /bin/bash`
+
+### 4.3 Makefile 双架构支持
+
+关键修改：`ifeq ($(ARCH),loongarch)` 分支
+- TOOLPREFIX = `loongarch64-linux-gnu-`
+- QEMU = `qemu-system-loongarch64`
+- CFLAGS += `-march=loongarch64 -mcmodel=normal`
+- QEMUOPTS = `-machine virt -cpu la464`
+
+### 4.4 工具链变量对照
+
+| 变量 | RISC-V | LoongArch |
+|---|---|---|
+| TOOLPREFIX | `riscv64-unknown-elf-` | `loongarch64-linux-gnu-` |
+| QEMU | `qemu-system-riscv64` | `qemu-system-loongarch64` |
+| MIN_QEMU_VERSION | 7.2 | 7.1 |
+| CFLAGS -march | `rv64gc` | `loongarch64` |
+| CFLAGS -mcmodel | `medany` | `normal` |
+| kernel.ld OUTPUT_ARCH | `riscv` | `loongarch` |
+
+### 4.5 第4周具体任务清单
+
+1. [ ] 编写 Dockerfile，构建镜像，验证 `loongarch64-linux-gnu-gcc` 可用
+2. [ ] 验证 QEMU：启动 LoongArch virt 机器
+3. [ ] 编写最小汇编启动代码，通过 UART 输出字符
+4. [ ] 修改 Makefile（`ARCH=loongarch` 分支）
+5. [ ] 实验确认 QEMU virt 内存布局：UART 地址(0x1FE001E0)、RAM 基址、内核加载地址
 
 ---
 
@@ -335,48 +375,74 @@ sudo apt install gcc-loongarch64-linux-gnu qemu-system-misc
 
 ### 🗓️ 第4周：搭建 LoongArch 开发环境
 
-**目标**：能编译出 LoongArch 的内核并在 QEMU 上启动（哪怕只是打印一行字）。
+**目标**：Docker 化 LoongArch 交叉编译工具链和 QEMU，能编译最小启动代码并输出字符。
 
 **任务**：
-- 安装 `qemu-system-loongarch64` 和 `loongarch64-linux-gnu-gcc`（或裸机 elf 工具链）
-- 了解 LoongArch 的：
-  - **特权架构**：CSR 寄存器（CRMD、PRMD、ECFG、ESTAT 等），对应 RISC-V 的 sstatus/stvec
-  - **地址空间**：直接映射窗口（DMW）机制，与 RISC-V sv39 的区别
-  - **中断控制器**：EIOINTC 或 LIOINTC
-  - **启动流程**：从 QEMU `virt` 机器的复位向量开始
-- 编写最小的 LoongArch 启动代码（`hal/loongarch/entry.S`），能从 UART 输出 "Hello LoongArch"
-- 编写最小 Makefile 支持 `make ARCH=loongarch`
+- 编写 `Dockerfile.loongarch`（Ubuntu 24.04 + gcc-loongarch64-linux-gnu + qemu-system-loongarch64）
+- 构建 Docker 镜像，验证工具链可用
+- 修改 Makefile：`ifeq ($(ARCH),loongarch)` 分支（TOOLPREFIX, QEMU, CFLAGS）
+- 实验性编写 `hal/loongarch/hal_entry.S` 和 `hal/loongarch/kernel.ld`（最小版本）
+- 从 UART (0x1FE001E0) 输出 "Hello LoongArch" 确认启动成功
+- 确认 QEMU LoongArch virt 机器内存布局
 
-**参考资料**：
-- 龙芯架构参考手册（LoongArch Reference Manual）
-- Linux 内核中 `arch/loongarch/` 的实现（很好的参考）
+**交付物**：Dockerfile + 最小启动代码 + `make ARCH=loongarch` 可用
+
+**参考**：完整 Docker 搭建步骤见 `loongarch-migration-guide.html` Part 一
 
 ---
 
-### 🗓️ 第5周：实现 LoongArch HAL——CPU、内存、串口
+### 🗓️ 第5周：实现 LoongArch HAL——CPU、内存、串口（6个文件）
 
-**目标**：实现 LoongArch 版本的基础 HAL 接口。
+**目标**：实现基础 HAL 接口，能进入 `main()` 并完成内存初始化。
 
-**任务**：
-- `hal/loongarch/hal_cpu.c`：用 LoongArch CSR 指令实现中断开关、核心ID
-- `hal/loongarch/hal_uart.c`：QEMU virt 机型上的 UART（16550 兼容，地址不同）
-- `hal/loongarch/hal_vm.c`：实现 LoongArch 的三级页表（与 sv39 类似但格式不同），封装 TLB 刷新（`invtlb` 指令）和页表切换（写 `PGDL` CSR）
-- `hal/loongarch/entry.S`：实现多核启动、内核栈设置
+**具体文件与任务**：
 
-**验证**：能进入 `main()` 并完成内存初始化。
+| 文件 | 任务 |
+|---|---|
+| `hal/loongarch/arch.h` (~400行) | 所有 CSR 内联函数（csrrd/csrwr）、PTE 格式宏（PA2PTE/PTE2PA 分两段）、中断控制、HAL 统一包装 |
+| `hal/loongarch/memlayout.h` (~60行) | QEMU virt 物理地址布局：UART0=0x1FE001E0, RAM, KERNBASE, TRAMPOLINE |
+| `hal/loongarch/hal_entry.S` (~30行) | 启动入口：读 CPUID CSR → 设栈 → 跳 start() |
+| `hal/loongarch/hal_start.c` (~80行) | PLV0 初始化（无 M 态切换）：配置 CRMD/EENTRY → 定时器初始化 → tp=cpuid → 跳 main() |
+| `hal/loongarch/hal_uart.c` (~160行) | 16550a UART 驱动（逻辑复用 RISC-V 版本，仅地址不同） |
+| `hal/loongarch/kernel.ld` (~50行) | 链接脚本：OUTPUT_ARCH("loongarch")，加载地址 0x1c000000 |
+
+**关键技术注意事项**：
+- **PTE PPN 分两段**：PA2PTE(pa) = `((pa>>12)<<12) | ((pa>>48)<<7)`，与 RISC-V 完全不同
+- **无 M 态**：start() 直接 PLV0 运行，无需 mret。用 `w_eentry(kernelvec)` 设置异常入口
+- **定时器**：`w_tcfg(0x1)` 使能 + `w_tval(1000000)` 设初值，中断在 ESTAT.IS[11]
+
+**验证**：能输出 "xv6 kernel is booting"，`kinit()` 完成物理内存初始化
 
 ---
 
-### 🗓️ 第6周：实现 LoongArch HAL——中断、定时器、上下文切换
+### 🗓️ 第6周：实现 LoongArch HAL——中断、定时器、上下文切换（5个文件）
 
-**目标**：实现完整的中断和调度支持。
+**目标**：完整的中断和调度支持。
 
-**任务**：
-- `hal/loongarch/hal_intr.c`：实现 LoongArch 的外部中断控制（QEMU virt 上可用 PCIE INTC 或简化版）
-- `hal/loongarch/hal_timer.c`：用 LoongArch 的 `TCFG`/`TVAL` CSR 实现定时器中断
-- `hal/loongarch/trampoline.S`：实现用户态到内核态的陷入向量（`tlbrefill`、`exception` 向量）
-- `hal/loongarch/swtch.S`：实现通用寄存器的保存/恢复（LoongArch 有 32 个通用寄存器）
-- `hal/loongarch/hal_trap.c`：实现异常分发逻辑
+**具体文件与任务**：
+
+| 文件 | 任务 |
+|---|---|
+| `hal/loongarch/hal_tramp.S` (~200行) | 用户态陷入/返回：uservec（保存GPR→TRAPFRAME→切页表→跳usertrap）+ userret（恢复GPR→ertn返回）。还需实现 TLBRENTRY 的软件 TLB 重填 handler |
+| `hal/loongarch/hal_kvec.S` (~70行) | 内核态中断向量：保存caller-saved寄存器 → kerneltrap() → 恢复 → ertn |
+| `hal/loongarch/hal_swtch.S` (~50行) | 上下文切换：保存/恢复 12 个 callee-saved 寄存器（ra, sp, fp, s0-s8） |
+| `hal/loongarch/hal_intr.c` (~100行) | EIOINTC 中断控制器的 init/hart_init/claim/complete。参考 Linux `irq-loongarch-eiointc.c` 和 QEMU `loongarch_extioi.c` |
+| `hal/loongarch/hal_timer.c` (~30行) | 定时器包装（timerinit 已在 hal_start.c，此文件可选） |
+
+**同时修改的通用文件**：
+
+| 文件 | 修改 |
+|---|---|
+| `hal/hal_ctx.h` | `#ifdef ARCH_loongarch` 分支：struct hal_context 12 字段（vs RISC-V 14） |
+| `kernel/trap.c` | devintr() 中 scause 比较 → 使用 `hal_read_scause()`（由 arch.h 中 estat_to_scause 转换） |
+
+**关键技术注意事项**：
+- **软件 TLB 重填**：先在内核空间用 DMW 直接映射避免 TLB miss；用户态页表 walk 在 TLBRENTRY handler 中实现
+- **EIOINTC**：与 PLIC 完全不同，寄存器布局需参考 Linux 内核。第5周可先跳过，轮询 UART
+- **ertn 代替 sret**：所有异常返回用 `ertn`
+- **ertn 返回用户态**：需设 ERA=user_pc, PRMD.PPLV=3(PLV3), PRMD.PIE=1(开中断)
+
+**验证**：定时器中断触发、两个进程交替运行、shell 响应键盘输入
 
 ---
 
@@ -385,20 +451,30 @@ sudo apt install gcc-loongarch64-linux-gnu qemu-system-misc
 **目标**：在 LoongArch 上跑通 xv6 的核心测例。
 
 **任务**：
-- 整合 VFS 层（与队友协调接口），确保 HAL 层不影响文件系统
-- 移植用户态程序的编译（`user/` 目录下的程序需要用 loongarch 工具链编译）
+- `hal/loongarch/hal_virtio.c` (~330行)：PCI virtio 磁盘驱动
+  - **关键差异**：LoongArch QEMU virt 用 PCI virtio，非 MMIO virtio
+  - **简化方案**：先用 `-initrd` ramdisk 绕过 PCI 枚举，后期再实现完整 PCI virtio
+- 移植用户态程序（`user/` 用 loongarch 工具链编译）
 - 调试常见问题：
-  - 页表映射错误（最常见）
-  - 中断向量未对齐
+  - 页表 PPN 两段式存储导致映射错误（最常见）
+  - TLB 重填 handler 的页表 walk 逻辑错误
+  - 中断向量未对齐或 ECFG.VS 配置错误
   - 定时器中断未触发导致无法调度
-- 目标：通过 `usertests`（或其等价版本）的基本测例：`fork`、`exec`、`pipe`、`read/write`
+  - 上下文切换寄存器偏移与 hal_ctx.h 不一致
 
-**工具**：
+**验证**：`fork`、`exec`、`pipe`、`read/write` 基本测例通过
+
+**调试工具**：
 ```bash
-# QEMU 调试技巧
+# QEMU 调试
 qemu-system-loongarch64 -S -gdb tcp::1234 &
-loongarch64-linux-gnu-gdb vmlinux -ex "target remote :1234"
-```
+gdb-multiarch kernel -ex "target remote :1234"
+
+# 打印每条指令和 CPU 状态
+qemu-system-loongarch64 -d in_asm,cpu,int
+
+# 反汇编验证
+loongarch64-linux-gnu-objdump -d kernel
 
 ---
 
@@ -419,21 +495,82 @@ loongarch64-linux-gnu-gdb vmlinux -ex "target remote :1234"
 
 ---
 
-## 六、关键技术对照表
+## 六、关键技术对照表（RISC-V ↔ LoongArch）
 
-这是 RISC-V 和 LoongArch 最重要的概念对应关系，开发时随时查阅：
+### 6.1 总体差异
 
-| 功能 | RISC-V | LoongArch |
+| 维度 | RISC-V (rv64) | LoongArch (LA64) | HAL 影响 |
+|---|---|---|---|
+| 字长 | 64-bit | 64-bit | 无差异 |
+| 特权级 | M/S/U 三级 | PLV0(内核)/PLV3(用户) 两级 | 无需 M 态，start() 极简 |
+| CSR 指令 | `csrr/csrw/csrci/csrsi` | `csrrd/csrwr/csrxchg` | 重写 CSR 内联函数 |
+| 页表 walk | 硬件自动（Sv39 3级） | **软件 TLB 重填** + DMW | 最大差异！需 TLBRENTRY handler |
+| TLB 刷新 | `sfence.vma` | `invtlb 0, $r0, $r0` | hal_tlb_flush_all() |
+| 异常返回 | `sret`/`mret` | `ertn` | trampoline.S/kvec.S |
+| 中断控制器 | PLIC (MMIO) | EIOINTC (MMIO) | hal_intr.c 完全重写 |
+| 定时器 | CLINT MMIO + stimecmp CSR | TCFG/TVAL CSR（纯CSR） | hal_timer.h |
+| virtio 磁盘 | MMIO @0x10001000 | PCI virtio（PCIe 总线） | hal_virtio.c 需 PCI 枚举 |
+| UART | 16550a @0x10000000 | 16550a @0x1FE001E0 | 仅地址不同 |
+| Callee-saved | ra, sp, s0-s11 (14个) | ra, sp, fp, s0-s8 (12个) | hal_ctx.h 需条件编译 |
+
+### 6.2 CSR 寄存器对照
+
+| 用途 | RISC-V CSR | LoongArch CSR | 编号 |
+|---|---|---|---|
+| 当前状态 | `sstatus` | `CRMD` (PLV+IE+PG+DA) | 0x0 |
+| 异常前状态 | `sstatus.SPP/SPIE` | `PRMD` (PPLV+PIE) | 0x1 |
+| 中断使能 | `sie` | `ECFG` (LIE[12:0]) | 0x4 |
+| 异常状态 | `scause` | `ESTAT` (IS+Ecode+EsubCode) | 0x5 |
+| 异常返回地址 | `sepc` | `ERA` | 0x6 |
+| 异常虚拟地址 | `stval` | `BADV` | 0x7 |
+| 异常入口 | `stvec` | `EENTRY` | 0xC |
+| 页表基址 | `satp` (含模式) | `PGDL` (纯物理地址) | 0x19 |
+| 核心ID | `mhartid` | `CPUID` | 0x20 |
+| 定时器配置 | (CLINT MMIO) | `TCFG` | 0x41 |
+| 定时器值 | `stimecmp` | `TVAL` | 0x42 |
+| 定时器清中断 | (写 stimecmp) | `TICLR` | 0x44 |
+| TLB 重填入口 | (无) | `TLBRENTRY` | 0x88 |
+| 直接映射窗口 | (无) | `DMW0-DMW3` | 0x180-0x183 |
+
+### 6.3 异常码对照（trap.c 适配）
+
+| 事件 | RISC-V scause | LoongArch ESTAT.Ecode |
 |---|---|---|
-| 关中断 | `csrci sstatus, SIE` | `csrxchg r0, t0, CRMD` |
-| 获取核心ID | `csrr a0, mhartid` | `cpucfg rd, 0x5` 或 `CSR.CPUID` |
-| 设置异常向量 | `csrw stvec, t0` | `csrwr t0, EENTRY` |
-| 页表基址 | `csrw satp, t0` (含模式) | `csrwr t0, PGDL` |
-| TLB 刷新 | `sfence.vma` | `invtlb 0, r0, r0` |
-| 定时器 | CLINT（MMIO） | `CSR.TCFG` / `CSR.TVAL` |
-| 中断控制器 | PLIC（MMIO） | EIOINTC / LIOINTC |
-| 特权级 | M/S/U 三级 | PLV0/PLV3 两级（PLV0=内核） |
-| 页表格式 | sv39（3级，9-9-9-12） | 类似，但 PTE 格式不同 |
+| 系统调用 | `8` | `EXCCODE_SYS = 11 (0xB)` |
+| 缺页/load | `13` | `EXCCODE_TLBL = 1` |
+| 缺页/store | `15` | `EXCCODE_TLBS = 2` |
+| 缺页/fetch | `12` | `EXCCODE_TLBI = 3` |
+| 非法指令 | `2` | `EXCCODE_INE = 13 (0xD)` |
+| 定时器中断 | `0x8000000000000005` | Ecode=0, IS[11]=1 |
+| 外部中断 | `0x8000000000000009` | Ecode=0, IS[12]=1 |
+
+> 推荐在 `hal_read_scause()` 中转换 ESTAT → scause，让 trap.c 无需修改。
+
+### 6.4 页表格式差异
+
+```
+RISC-V PTE: |保留| PPN[53:10] | Flags[9:0] |
+            V(0) R(1) W(2) X(3) U(4) G(5) A(6) D(7)
+
+LoongArch PTE:
+|63|  62   |  61  | 60 |   59-12   |11-7  | 6 |5-4 |3-2 |1|0|
+|NX_H|RPLV_H|RPLV| NX |  PPN[47:0]|PPN0  | G |MAT |PLV |D|V|
+```
+
+关键：LoongArch PPN 在 PTE 中分两段！`PA2PTE(pa) = ((pa>>12)<<12) | ((pa>>48)<<7)`
+
+### 6.5 GPR ABI 对照
+
+| 类别 | RISC-V | LoongArch |
+|---|---|---|
+| 零寄存器 | x0 | $r0 |
+| 返回地址 | x1/ra | $r1/$ra |
+| 线程指针 | x4/tp | $r2/$tp |
+| 栈指针 | x2/sp | $r3/$sp |
+| 参数 | a0-a7 (x10-x17) | $a0-$a7 ($r4-$r11) |
+| 临时 | t0-t6 | $t0-$t8 ($r12-$r20) |
+| 帧指针 | s0/fp (x8) | $fp ($r22) |
+| 被调者保存 | ra,sp,s0-s11 (14) | ra,sp,fp,s0-s8 (12)
 
 ---
 

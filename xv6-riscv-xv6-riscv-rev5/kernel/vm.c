@@ -26,19 +26,50 @@ kvmmake(void)
   memset(kpgtbl, 0, PGSIZE);
 
   // uart registers
-  kvmmap(kpgtbl, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  kvmmap(kpgtbl, PGROUNDDOWN(UART0), PGROUNDDOWN(UART0), PGSIZE, PTE_R | PTE_W);
 
-  // virtio mmio disk interface
-  kvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
-
-  // PLIC
+  // PLIC/EIOINTC interrupt controller region
   kvmmap(kpgtbl, PLIC, PLIC, 0x4000000, PTE_R | PTE_W);
+
+#ifdef ARCH_loongarch
+  // VIRTIO0 is within PLIC range on LoongArch (0x10000000 in 0x0FE00000-0x13E00000)
+  // Skip separate VIRTIO0 mapping - it's already mapped by PLIC.
+  // VIRTIO0 is PCI-based on LoongArch, accessed via PCI config space, not direct MMIO.
+
+  // Map kernel code from flash, split around the TRAMPOLINE page.
+  // TRAMPOLINE (0x1C008000) sits inside the read-only sections.
+  // Map code before and after it; the trampoline page itself is
+  // DMW0-accessible for kernel and user-page-table-mapped for user.
+  extern char _data_lma[], _trampoline[];
+  uint64 rodata_end = (uint64)_data_lma;
+  uint64 tramp_va   = (uint64)_trampoline;
+  if (tramp_va > KERNBASE)
+    kvmmap(kpgtbl, KERNBASE, KERNBASE, tramp_va - KERNBASE, PTE_R | PTE_X);
+  uint64 after_tramp = tramp_va + PGSIZE;
+  if (rodata_end > after_tramp)
+    kvmmap(kpgtbl, after_tramp, after_tramp, rodata_end - after_tramp, PTE_R | PTE_X);
+#else
+  // virtio mmio disk interface (RISC-V only)
+  kvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
 
   // map kernel text executable and read-only.
   kvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+#endif
 
+#ifdef ARCH_loongarch
+  // LoongArch: kernel .data/.bss are in RAM at 0x00400000, not after etext in flash.
+  // Map the RAM data+bss region, then free RAM for kalloc.
+  extern char _data_start[], _bss_end[], end[];
+  uint64 ram_begin = PGROUNDDOWN((uint64)_data_start);
+  uint64 ram_end   = PGROUNDUP((uint64)_bss_end);
+  uint64 free_begin = PGROUNDUP((uint64)end);
+  kvmmap(kpgtbl, ram_begin, ram_begin, ram_end - ram_begin, PTE_R | PTE_W);
+  if(free_begin < PHYSTOP)
+    kvmmap(kpgtbl, free_begin, free_begin, PHYSTOP - free_begin, PTE_R | PTE_W);
+#else
   // map kernel data and the physical RAM we'll make use of.
   kvmmap(kpgtbl, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+#endif
 
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
@@ -79,6 +110,38 @@ kvminithart()
 
   // flush stale entries from the TLB.
   sfence_vma();
+
+#ifdef ARCH_loongarch
+  // On LoongArch, enable the MMU with DMW for kernel direct mapping.
+  //
+  // DMW0 maps VA[47:36]=0 → PA[47:36]=0 (identity mapping, low 64GB).
+  // This covers: RAM, EIOINTC, flash, UART, TRAMPOLINE, kernel stacks —
+  // all kernel addresses. No TLB needed for kernel access.
+  //
+  // DMW format: [3:0]=PLV, [5:4]=MAT, [27:12]=VSEG, [47:36]=PSEG
+  // DMW0: PLV0-only identity map for VA[63:60]=0 → PA=VA.
+  // Covers all kernel code/data/flash/UART/EIOINTC (all < 2^60).
+  // KSTACK is placed at low physical addresses with actual RAM.
+  // TRAMPOLINE is placed at its flash LMA so DMW0 reaches the real code.
+  // TRAPFRAME accessed via KSave1 (kernel VA), not TRAPFRAME VA.
+  w_dmw0(0x0000000000000011ULL);  // PLV0, MAT=01(CC), VSEG=0
+  w_dmw1(0);
+
+  // Flush all TLB entries before enabling MMU
+  sfence_vma();
+
+  // Set TLB refill entry point for user-space TLB misses
+  extern void tlb_refill_entry(void);
+  uint64 tlbr_entry = (uint64)tlb_refill_entry;
+  asm volatile("csrwr %0, 0x88" : "+r"(tlbr_entry));
+
+  // Enable MMU: clear DA (direct address), set PG (page table).
+  // DA must be 0 for PG to take effect. Write atomically.
+  uint64 crmd = r_crmd();
+  crmd &= ~CRMD_DA;     // disable direct address translation
+  crmd |= CRMD_PG;      // enable page table walk
+  w_crmd(crmd);
+#endif
 }
 
 // Return the address of the PTE in page table pagetable
@@ -155,7 +218,7 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 
   if(size == 0)
     panic("mappages: size");
-  
+
   a = va;
   last = va + size - PGSIZE;
   for(;;){
@@ -163,7 +226,7 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
       return -1;
     if(*pte & PTE_V)
       panic("mappages: remap");
-    *pte = PA2PTE(pa) | perm | PTE_V;
+    *pte = PA2PTE(pa) | perm | PTE_V_CACHE;
     if(a == last)
       break;
     a += PGSIZE;
@@ -264,13 +327,23 @@ freewalk(pagetable_t pagetable)
   // there are 2^9 = 512 PTEs in a page table.
   for(int i = 0; i < 512; i++){
     pte_t pte = pagetable[i];
-    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
-      // this PTE points to a lower-level page table.
+    if(pte & PTE_V) {
+#ifdef ARCH_loongarch
+      // LoongArch: non-leaf PTEs have PTE_V but no MAT bit.
+      // Leaf PTEs always have PTE_V_CACHE (V+MAT) set.
+      // This distinguishes them: non-leaf has V=1,MAT=0; leaf has V=1,MAT=1.
+      if(pte & PTE_MAT) {
+        panic("freewalk: leaf");
+      }
+#else
+      // RISC-V: non-leaf PTEs have V=1 but no R/W/X flags.
+      if((pte & (PTE_R|PTE_W|PTE_X)) != 0){
+        panic("freewalk: leaf");
+      }
+#endif
       uint64 child = PTE2PA(pte);
       freewalk((pagetable_t)child);
       pagetable[i] = 0;
-    } else if(pte & PTE_V){
-      panic("freewalk: leaf");
     }
   }
   kfree((void*)pagetable);

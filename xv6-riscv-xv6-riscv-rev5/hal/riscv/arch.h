@@ -359,6 +359,7 @@ static inline void   hal_tlb_flush_all(void)  { sfence_vma(); }
 static inline void   hal_intr_on(void)        { intr_on(); }
 static inline void   hal_intr_off(void)       { intr_off(); }
 static inline int    hal_intr_get(void)       { return intr_get(); }
+static inline void   hal_cpu_idle(void)       { asm volatile("wfi"); }
 
 #endif // __ASSEMBLER__
 

@@ -35,4 +35,7 @@ uint64 hal_read_sp(void);
 // ---- Return address ----
 uint64 hal_read_ra(void);
 
+// ---- CPU idle (platform-specific wait-for-interrupt) ----
+void hal_cpu_idle(void);
+
 #endif

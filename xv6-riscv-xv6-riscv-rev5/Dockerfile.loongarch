@@ -1,0 +1,48 @@
+# ============================================================
+# xv6-riscv HAL — LoongArch 交叉编译 + QEMU 开发环境
+# 基于 Ubuntu 24.04，使用清华/阿里镜像源加速国内下载
+# ============================================================
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Step 1: 先用默认源安装 ca-certificates（HTTPS 依赖）
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Step 2: 替换为清华大学 Ubuntu 镜像源
+RUN sed -i 's|http://archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/ubuntu.sources && \
+    sed -i 's|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/ubuntu.sources
+
+# Step 3: 用清华源安装所有开发工具
+# 注意：包名带版本号 (gcc-14-...)，二进制也是 loongarch64-linux-gnu-gcc-14
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    gcc-14-loongarch64-linux-gnu \
+    g++-14-loongarch64-linux-gnu \
+    binutils-loongarch64-linux-gnu \
+    qemu-system-misc \
+    qemu-system-data \
+    gdb-multiarch \
+    make \
+    python3 \
+    perl \
+    git \
+    build-essential \
+    vim \
+    xxd \
+    && rm -rf /var/lib/apt/lists/*
+
+# Step 4: 创建不带版本号的符号链接，方便 Makefile 使用 TOOLPREFIX=loongarch64-linux-gnu-
+RUN ln -s loongarch64-linux-gnu-gcc-14   /usr/bin/loongarch64-linux-gnu-gcc && \
+    ln -s loongarch64-linux-gnu-g++-14   /usr/bin/loongarch64-linux-gnu-g++ && \
+    ln -s loongarch64-linux-gnu-cpp-14   /usr/bin/loongarch64-linux-gnu-cpp && \
+    ln -s loongarch64-linux-gnu-gcov-14  /usr/bin/loongarch64-linux-gnu-gcov && \
+    ln -s loongarch64-linux-gnu-gcc-ar-14  /usr/bin/loongarch64-linux-gnu-gcc-ar && \
+    ln -s loongarch64-linux-gnu-gcc-nm-14  /usr/bin/loongarch64-linux-gnu-gcc-nm && \
+    ln -s loongarch64-linux-gnu-gcc-ranlib-14 /usr/bin/loongarch64-linux-gnu-gcc-ranlib
+
+WORKDIR /xv6
+
+CMD ["/bin/bash"]

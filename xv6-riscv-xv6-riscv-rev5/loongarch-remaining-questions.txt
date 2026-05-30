@@ -1,0 +1,123 @@
+================================================================================
+LoongArch TLB Refill Handler — 剩余待确认问题
+================================================================================
+
+当前状态：TLB refill handler 已按照手册修正：
+  ✅ tlbfill 替代 tlbwr（随机槽位）
+  ✅ TLBREHI.PS = 12 显式设置（4KB页）
+  ✅ TLBRELO0/1 正确设置
+  ✅ 页表 walk 正确（3级，#123 debug 已验证）
+  ✅ 专用 4KB 对齐页（0x1C008000，独立 .tlbrefill section）
+  ✅ TRAMPOLINE 地址已更新为 0x1C009000（不冲突）
+  ❌ ertn 后用户代码仍触发 scause=0xc (PIF)，ERA=0x0
+
+================================================================================
+Q1. TLBRPRMD 的 CSR 编号 [P0]
+================================================================================
+
+手册 §7.5 的表（CSR 编号表）中 "TLB Refill Exception Return Information" 区域
+的 CSR 编号是什么？
+
+已知：
+  - 0x88 = TLBRENTRY (TLB Refill Exception Entry)
+  - 0x89 = TLBRSAVE (TLB Refill Data Save)
+  - 0x8A = TLBRERA (TLB Refill Exception Return Address)
+  - 0x8B-0x8F = ??? 这些中哪个是 TLBRPRMD？
+
+需要确认：
+  1. TLBRPRMD 的确切 CSR 编号
+  2. TLBRPRMD 的位域定义（是否与 PRMD 格式相同？bits [1:0]=PPLV, bit[2]=PIE）
+  3. TLB refill 时硬件是否自动将 {PLV, IE} 保存到 TLBRPRMD？
+  4. ertn (IsTLBR=1) 时恢复的 PPLV/PIE 来自 TLBRPRMD 的哪些位？
+
+================================================================================
+Q2. TLB Refill 时 DA/PG 的状态 [P0]
+================================================================================
+
+上次调查提到："触发 TLB refill 后处理器进入直接地址翻译模式 DA=1, PG=0"
+
+需要确认：
+  1. 这个 DA=1 状态是指 CRMD.DA 被硬件临时置 1，还是指一个内部的
+     "物理地址模式"而非修改 CRMD 寄存器？
+  2. 在 DA=1 模式下，handler 的指令取指也是物理地址，对吗？
+     （handler 代码在 flash 0x1C008000，DA=1 时 VA=0x1C008000 → PA=0x1C008000，正确）
+  3. ertn (IsTLBR=1) 时硬件"将 CRMD.DA 清 0、CRMD.PG 置 1"——
+     这意味着 ertn 会恢复 MMU 模式。此时 PGDL 的值是否仍然是
+     用户页表（由 userret 设置的）？还是 TLB refill 过程中 PGDL 被修改了？
+  4. 在 DA=1 期间，handler 通过 PGDL 读取页表——PGDL 中是物理地址，
+     DA=1 将其作为物理地址直接访问，对吗？
+
+================================================================================
+Q3. ertn (IsTLBR=1) 后的取指是否会再次触发 TLB miss？[P0]
+================================================================================
+
+流程：
+  1. 用户代码在 PLV3, VA=0x0, 取指 → TLB miss
+  2. TLBRENTRY handler 填充 TLB
+  3. ertn (IsTLBR=1) → CPU 进入 PLV3, PC=0x0
+  4. CPU 再次尝试取指 VA=0x0
+
+步骤 4 中：TLB 是否会被查询？还是 CPU 会直接用 handler 刚填充的条目？
+
+需要确认：
+  1. tlbfill 填充的 TLB 条目在 ertn 后是否立即可用？
+  2. 是否有 TLB 刷新（如隐式的 invtlb）在 ertn (IsTLBR=1) 时发生？
+  3. 用户页表 (PGDL) 在 TLB refill 期间是否被修改？userret 设置了 PGDL
+     = 用户页表。TLB refill 全程 PGDL 不变。ertn 后 PGDL 仍是用户页表？
+  4. 取指时 TLB 查找使用的 ASID 是什么？如果是非0值，是否与 tlbfill 填充的
+     ASID 匹配？
+
+================================================================================
+Q4. TLBRERA 格式 [P1]
+================================================================================
+
+手册 §7.5 中 TLBRERA 的位域格式：
+
+需要确认：
+  1. TLBRERA 中保存的 PC 的位范围是 [GRLEN-1:2] 还是其他？
+     (bits [1:0] 是否恒为 0？)
+  2. TLBRERA.IsTLBR 位的位置（bit 0? bit 1? 其他？）
+  3. 当 TLB refill handler 中的 ertn 清除了 IsTLBR 后，后续的普通 ertn
+     是否从 ERA/PRMD 恢复？
+
+================================================================================
+Q5. TLB refill handler 中是否允许触发嵌套例外？[P1]
+================================================================================
+
+如果 handler 中的页表 walk 遇到不存在的页表项（V=0），handler 写 V=0 条目
+并 ertn。之后指令重试触发 TLBI (PIF, Ecode=0x3)。
+
+这个 TLBI 例外会：
+  1. 保存 faulting PC 到 ERA（不是 TLBRERA，因为 IsTLBR 已被 ertn 清除）
+  2. 跳转到 EENTRY（uservec）
+  3. uservec 调用 usertrap，ERA 应为用户 PC
+
+需要确认：
+  1. 这个链条是否正确？
+  2. TLB refill handler 中如果发生页错误（handler 自己的代码或数据
+     访问出错），会怎样？是否会导致嵌套 TLB refill？还是直接触发异常？
+
+================================================================================
+Q6. 最小 TLB refill handler 测试 [P0]
+================================================================================
+
+建议测试：将 TLBRENTRY 设置为一个最简单的 handler，只做：
+  1. 读 BADV 获取 faulting VA
+  2. 身份映射：PA = VA (低 36 位)
+  3. 写 V=1, D=1, PLV=11, MAT=01 到 TLBRELO0
+  4. 清 TLBRELO1
+  5. 设置 TLBREHI.PS = 12
+  6. tlbfill
+  7. ertn
+
+这个 handler 不依赖页表，只是身份映射所有 VA。用户代码 VA=0x0 会被
+身份映射到 PA=0x0。
+
+需要确认：
+  PA=0x0 是否有实际 RAM？QEMU LoongArch virt 低 RAM 从 0x0 开始吗？
+  如果是，PA=0x0 处的内容是什么？（是 boot ROM 还是用户代码？）
+
+如果这个测试能让用户代码开始执行（即使执行错误代码），就证明 TLB fill
++ ertn 的返回机制是正确的，问题在页表 walk。
+
+如果仍然失败（同样 scause=0xc），则问题在 tlbfill/ertn 的返回机制本身。

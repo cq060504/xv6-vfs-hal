@@ -274,10 +274,131 @@ void hal_start(void);
 > LoongArch 移植时只需实现以上 hal_ 前缀函数，内核通用代码无需任何修改。
 
 
-### 🚀 下一步（第4周）
-1. 搭建 LoongArch 开发环境
-2. 安装 loongarch64 交叉编译工具链和 QEMU
-3. 编写最小 LoongArch 启动代码
+### 🚀 下一步（第4周）— 搭建 LoongArch 开发环境
+
+#### 环境目标
+- 在 WSL2 中用 **Docker** 搭建隔离的 LoongArch 开发环境（与宿主机 RISC-V 环境隔离）
+- Docker 镜像基于 Ubuntu 24.04，通过 `apt` 安装 `gcc-loongarch64-linux-gnu` + `qemu-system-loongarch64`
+- 通过 volume 挂载源码，宿主机编辑，容器内编译
+
+#### Docker 快速启动
+```bash
+# 构建镜像
+docker build -t xv6-loongarch -f Dockerfile.loongarch .
+
+# 启动容器（挂载项目目录）
+docker run -it --rm -v $(pwd):/xv6 xv6-loongarch /bin/bash
+
+# 编译
+make ARCH=loongarch
+```
+
+#### 第4周交付物
+1. Dockerfile 编写并成功构建镜像
+2. 交叉编译工具链可用验证
+3. QEMU LoongArch virt 机器能启动
+4. 最小汇编代码能向 UART 输出字符
+5. Makefile `ARCH=loongarch` 分支可用
+6. 确认 QEMU virt 机器内存布局和 UART 地址（UART0 = 0x1FE001E0）
+
+---
+
+## LoongArch 移植关键技术要点
+
+### 架构核心差异（HAL 实现前必须理解）
+
+| 维度 | RISC-V (rv64) | LoongArch (LA64) | HAL 影响 |
+|---|---|---|---|
+| **特权级** | M/S/U 三级 | PLV0(内核)/PLV3(用户) 两级 | 无需 M 态启动流程，start() 极简 |
+| **CSR 指令** | `csrr/csrw/csrci/csrsi` | `csrrd/csrwr/csrxchg` | 重写所有 CSR 内联函数 |
+| **页表 walk** | 硬件自动（Sv39 3级） | **软件 TLB 重填** | 最大差异！需实现 TLBRENTRY 处理函数 |
+| **TLB 刷新** | `sfence.vma` | `invtlb 0, $r0, $r0` | hal_tlb_flush_all() 实现不同 |
+| **异常返回** | `sret`/`mret` | `ertn`（统一一条指令） | trampoline.S/kvec.S 返回指令 |
+| **中断控制器** | PLIC (MMIO) | EIOINTC (MMIO) | hal_intr.c 完全重写 |
+| **定时器** | CLINT+stimecmp CSR | TCFG/TVAL CSR（纯CSR） | hal_timer.h 重新实现 |
+| **virtio 磁盘** | MMIO virtio @0x10001000 | PCI virtio（通过 PCIe 总线） | hal_virtio.c 需要 PCI 枚举 |
+| **Callee-saved** | ra, sp, s0-s11 (14个) | ra, sp, fp, s0-s8 (12个) | hal_ctx.h 结构体字段数不同 |
+
+### 页表格式差异（重点）
+
+```
+RISC-V PTE[63:0]: |保留| PPN[53:10] | Flags[9:0] |
+                        V(0) R(1) W(2) X(3) U(4) G(5) A(6) D(7)
+
+LoongArch PTE[63:0]:
+|NX_H|RPLV_H|RPLV|NX| PPN[59:12] |PPN0[11:7]|G|MAT|PLV|D|V|
+ V(0) valid, D(1) dirty, PLV[3:2] 权限, MAT[5:4] 内存属性,
+ G(6) global, NX(60) 不可执行, RPLV[61] 读写权限
+
+关键：LoongArch PPN 分两段存储！
+  PPN[47:0] → PTE[59:12]
+  PPN[52:48] → PTE[11:7]
+  PA2PTE/PTE2PA 宏需重写
+```
+
+### 软件 TLB 重填机制
+
+LoongArch 的 MMU 在 TLB miss 时**不自动 walk 页表**，而是触发 TLB 重填异常，由内核软件完成 walk 和 TLB 填入。
+- 入口 CSR: `TLBRENTRY` (0x88)，独立于 `EENTRY` (0xC)
+- 填入指令: `tlbwr`(随机写), `tlbfill`(指定写)
+- **简化策略（推荐）**：用 DMW (Direct Mapping Window) 映射内核空间，避免内核 TLB miss
+
+### 异常码对照（trap.c 适配关键）
+
+| 事件 | RISC-V scause | LoongArch ESTAT.Ecode |
+|---|---|---|
+| 系统调用 | `8` | `EXCCODE_SYS = 11 (0xB)` |
+| 缺页/load | `13` | `EXCCODE_TLBL = 1` |
+| 缺页/store | `15` | `EXCCODE_TLBS = 2` |
+| 缺页/fetch | `12` | `EXCCODE_TLBI = 3` |
+| 定时器中断 | `0x8000000000000005` | Ecode=0, IS[11]=1 |
+| 外部中断 | `0x8000000000000009` | Ecode=0, IS[12]=1 |
+
+> 推荐在 `hal_read_scause()` 中写 `estat_to_scause()` 转换函数，让 trap.c 无需修改。
+
+### LoongArch 关键 CSR 速查
+
+| CSR 名 | 编号 | 用途 | RISC-V 对应 |
+|---|---|---|---|
+| CRMD | 0x0 | 当前模式 (PLV+IE+PG+DA) | sstatus |
+| PRMD | 0x1 | 异常前模式 (PPLV+PIE) | sstatus.SPP/SPIE |
+| ECFG | 0x4 | 异常配置 (LIE[12:0]) | sie |
+| ESTAT | 0x5 | 异常状态 (IS+Ecode+EsubCode) | scause+sip |
+| ERA | 0x6 | 异常返回地址 | sepc |
+| BADV | 0x7 | 异常虚拟地址 | stval |
+| EENTRY | 0xC | 异常入口地址 | stvec |
+| PGDL | 0x19 | 页表基址(低半地址) | satp |
+| CPUID | 0x20 | 核心ID | mhartid |
+| TCFG | 0x41 | 定时器配置 | (无—CLINT MMIO) |
+| TVAL | 0x42 | 定时器当前值 | (无—CLINT MMIO) |
+| TICLR | 0x44 | 定时器中断清除 | stimecmp(写) |
+| TLBRENTRY | 0x88 | TLB重填入口 | (无—RISC-V硬件walk) |
+
+### LoongArch HAL 实现文件清单（12个文件）
+
+| # | 文件 | 难度 | 预计行数 | 周次 |
+|---|---|---|---|---|
+| 1 | `hal/loongarch/arch.h` | ⭐⭐⭐ | ~400 | 第5周 |
+| 2 | `hal/loongarch/memlayout.h` | ⭐⭐ | ~60 | 第5周 |
+| 3 | `hal/loongarch/hal_entry.S` | ⭐⭐ | ~30 | 第5周 |
+| 4 | `hal/loongarch/hal_start.c` | ⭐⭐⭐ | ~80 | 第5周 |
+| 5 | `hal/loongarch/hal_uart.c` | ⭐ | ~160 | 第5周 |
+| 6 | `hal/loongarch/kernel.ld` | ⭐⭐ | ~50 | 第5周 |
+| 7 | `hal/loongarch/hal_tramp.S` | ⭐⭐⭐⭐⭐ | ~200 | 第6周 |
+| 8 | `hal/loongarch/hal_kvec.S` | ⭐⭐⭐ | ~70 | 第6周 |
+| 9 | `hal/loongarch/hal_swtch.S` | ⭐⭐ | ~50 | 第6周 |
+| 10 | `hal/loongarch/hal_intr.c` | ⭐⭐⭐⭐ | ~100 | 第6周 |
+| 11 | `hal/loongarch/hal_virtio.c` | ⭐ | ~330 | 第7周 |
+| 12 | `hal/loongarch/hal_timer.c`(可选) | ⭐⭐ | ~30 | 第6周 |
+
+### LoongArch 移植分周路线图
+
+| 周次 | 目标 | 验证标准 |
+|---|---|---|
+| **第4周** | 环境搭建 + 最小启动实验 | Docker 可用、QEMU 能启动、UART 能输出字符 |
+| **第5周** | CPU+内存+串口 | `main()` 能输出、kinit 完成、进入 shell |
+| **第6周** | 中断+定时器+调度 | 时钟中断触发、双进程切换、键盘输入响应 |
+| **第7周** | 磁盘+文件系统+测例 | fork/exec/pipe 通过、usertests 基本通过 |
 
 ---
 
@@ -285,15 +406,24 @@ void hal_start(void);
 
 ### 📋 设计决策
 
-- **PTE 格式**：HAL 层定义 `typedef uint64_t pte_t`，RISC-V/LoongArch 各自定义常量宏（如 `PTE_V`、`PTE_R` 等）
+- **PTE 格式**：HAL 层定义 `typedef uint64_t pte_t`，RISC-V/LoongArch 各自定义常量宏（如 `PTE_V`、`PTE_R` 等）。LoongArch PPN 分两段存储，PA2PTE/PTE2PA 需重写。
 - **CSR 访问**：通过 C 函数封装，避免内联汇编分散在内核代码中
-- **多核启动**：RISC-V 用 `mhartid`，LoongArch 用 `CPUID` CSR，统一通过 `hal_cpuid()` 访问
+- **多核启动**：RISC-V 用 `mhartid`，LoongArch 用 `CPUID` CSR，统一通过 `hal_get_hartid()` 访问
+- **scause 兼容**：LoongArch 用 ESTAT 而非 scause。在 `hal_read_scause()` 中做 `estat_to_scause()` 转换，确保 trap.c 无需修改
+- **上下文结构体**：RISC-V 14 字段 vs LoongArch 12 字段，需 `#ifdef ARCH_xxx` 条件编译 hal_ctx.h
+- **TLB 策略**：先用 DMW 映射内核空间避免内核 TLB miss，第6周再实现完整软件 TLB refill handler
+- **磁盘策略**：第5-6周用 ramdisk，第7周再实现 PCI virtio 磁盘驱动（避免 PCI 枚举复杂性阻塞早期开发）
+- **Docker 隔离**：RISC-V 环境在宿主机，LoongArch 环境在 Docker 容器，通过 `ARCH=xxx` 切换
 
 ### 🐛 已知难点
 
-1. **LoongArch 文档缺乏**：官方文档相对稀缺，需参考 Linux 内核实现
-2. **中断控制器差异大**：PLIC vs EIOINTC 架构完全不同，设计接口时需谨慎
-3. **页表格式细节**：两架构 PTE 的保留位定义不同，容易踩坑
+1. **软件 TLB 重填**：LoongArch 最大差异。RISC-V 硬件自动 walk，LoongArch 需软件 `tlb_refill_handler`。先绕过——内核用 DMW，用户态第6周实现。
+2. **中断控制器差异大**：PLIC vs EIOINTC 架构完全不同。EIOINTC 寄存器布局需参考 Linux 内核 `drivers/irqchip/irq-loongarch-eiointc.c` 和 QEMU `hw/intc/loongarch_extioi.c`。
+3. **页表 PPN 分两段**：PA2PTE/PTE2PA 宏与 RISC-V 完全不同的移位逻辑，容易出错。
+4. **PCI virtio 替代 MMIO virtio**：LoongArch QEMU virt 的磁盘是 PCI 设备而非 MMIO，需要 PCI 枚举或先用 ramdisk。
+5. **QEMU -kernel 可能不工作**：LoongArch virt 可能期望 UEFI firmware 加载内核。可能需要 `-device loader` 或直接用 BIOS 模式。
+6. **-mcmodel 差异**：RISC-V 用 `-mcmodel=medany`，LoongArch 裸机程序可能需要 `-mcmodel=normal`。
+7. **CSR 指令 `csrxchg` 语义微妙**：推荐用读-改-写方式操作 CRMD，避免 `csrxchg` 的掩码陷阱。
 
 ---
 
@@ -327,4 +457,4 @@ void hal_start(void);
 4.  **输出格式**：
     - 代码块必须标明语言（如 `c` `makefile`）。
     - 重要的命令或配置，用 `>` 单独列出，方便复制执行。
-*最后更新：2026-05-27 | 项目阶段：第3周收尾，HAL 接口命名统一完成（含 bug 修复），19 个 HAL 文件 1561 行，usertests 全通过。第4周：搭建 LoongArch 开发环境*
+*最后更新：2026-05-29 | 项目阶段：第4周启动，LoongArch 迁移指南已撰写（loongarch-migration-guide.html），Docker 环境待搭建，关键技术差异已标注*

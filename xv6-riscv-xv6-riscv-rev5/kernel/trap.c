@@ -116,6 +116,15 @@ prepare_return(void)
   p->trapframe->kernel_trap = (uint64)usertrap;
   p->trapframe->kernel_hartid = hal_get_hartid();      // hartid for cpuid()
 
+#ifdef ARCH_loongarch
+  // LoongArch: store trapframe kernel VA in KSave1 (CSR 0x31) so
+  // uservec/userret can access the trapframe via DMW0 identity mapping.
+  // This avoids DMW0 hijacking TRAPFRAME-VA-based accesses (which would
+  // go to PA=VA=TRAPFRAME instead of the actual physical trapframe page).
+  uint64 tf_kva = (uint64)p->trapframe;
+  asm volatile("csrwr %0, 0x31" : "+r"(tf_kva));
+#endif
+
   // set up the registers that trampoline.S's sret will use
   // to get to user space.
 
@@ -131,7 +140,7 @@ prepare_return(void)
 
 // interrupts and exceptions from kernel code go here via kernelvec,
 // on whatever the current kernel stack is.
-void 
+void
 kerneltrap()
 {
   int which_dev = 0;

@@ -31,6 +31,7 @@ K_OBJS = \
 # HAL_OBJS 已由 ARCH_OBJS 替代
 
 # HAL 平台实现对象(从 hal/$(ARCH)/ 编译)
+# RISC-V 默认
 ARCH_OBJS = \
   $(HAL)/$(ARCH)/hal_entry.o \
   $(HAL)/$(ARCH)/hal_start.o \
@@ -41,13 +42,40 @@ ARCH_OBJS = \
   $(HAL)/$(ARCH)/hal_uart.o \
   $(HAL)/$(ARCH)/hal_virtio.o
 
+# LoongArch 覆盖: 使用 hal_intr 代替 hal_plic, 增加 TLB refill
+ifeq ($(ARCH),loongarch)
+ARCH_OBJS = \
+  $(HAL)/$(ARCH)/hal_entry.o \
+  $(HAL)/$(ARCH)/hal_start.o \
+  $(HAL)/$(ARCH)/hal_swtch.o \
+  $(HAL)/$(ARCH)/hal_tramp.o \
+  $(HAL)/$(ARCH)/hal_kvec.o \
+  $(HAL)/$(ARCH)/hal_intr.o \
+  $(HAL)/$(ARCH)/hal_uart.o \
+  $(HAL)/$(ARCH)/hal_virtio.o \
+  $(HAL)/$(ARCH)/hal_tlbrefill.o
+endif
+
 OBJS = $(K_OBJS) $(ARCH_OBJS)
+
+# ============================================================
+# LoongArch 工具链和 QEMU (必须在 RISC-V 检测之前设置)
+# ============================================================
+ifeq ($(ARCH),loongarch)
+TOOLPREFIX = loongarch64-linux-gnu-
+QEMU = qemu-system-loongarch64
+MIN_QEMU_VERSION = 7.1
+# User programs: LoongArch syscall instruction and linker script
+USERLD = $(HAL)/$(ARCH)/user.ld
+else
+USERLD = $U/user.ld
+endif
 
 # riscv64-unknown-elf- or riscv64-linux-gnu-
 # perhaps in /opt/riscv/bin
-#TOOLPREFIX = 
+#TOOLPREFIX =
 
-# Try to infer the correct TOOLPREFIX if not set
+# Try to infer the correct TOOLPREFIX if not set (RISC-V only)
 ifndef TOOLPREFIX
 TOOLPREFIX := $(shell if riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big' >/dev/null 2>&1; \
 	then echo 'riscv64-unknown-elf-'; \
@@ -65,8 +93,12 @@ TOOLPREFIX := $(shell if riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big' 
 	echo "***" 1>&2; exit 1; fi)
 endif
 
+ifndef QEMU
 QEMU = qemu-system-riscv64
+endif
+ifndef MIN_QEMU_VERSION
 MIN_QEMU_VERSION = 7.2
+endif
 
 CC = $(TOOLPREFIX)gcc
 AS = $(TOOLPREFIX)gas
@@ -75,9 +107,13 @@ OBJCOPY = $(TOOLPREFIX)objcopy
 OBJDUMP = $(TOOLPREFIX)objdump
 
 CFLAGS = -Wall -Werror -Wno-unknown-attributes -O -fno-omit-frame-pointer -ggdb -gdwarf-2
+ifeq ($(ARCH),loongarch)
+CFLAGS += -march=loongarch64 -mcmodel=normal
+else
 CFLAGS += -march=rv64gc
-CFLAGS += -MD
 CFLAGS += -mcmodel=medany
+endif
+CFLAGS += -MD
 CFLAGS += -ffreestanding
 CFLAGS += -fno-common -nostdlib
 CFLAGS += -fno-builtin-strncpy -fno-builtin-strncmp -fno-builtin-strlen -fno-builtin-memset
@@ -103,10 +139,17 @@ endif
 
 LDFLAGS = -z max-page-size=4096
 
-$K/kernel: $(OBJS) $(HAL)/$(ARCH)/kernel.ld
-	$(LD) $(LDFLAGS) -T $(HAL)/$(ARCH)/kernel.ld -o $K/kernel $(OBJS)
+$K/kernel: $(OBJS) $(HAL)/$(ARCH)/kernel.ld $(if $(filter loongarch,$(ARCH)),$K/fs_img.o)
+	$(LD) $(LDFLAGS) -T $(HAL)/$(ARCH)/kernel.ld -o $K/kernel $(OBJS) $(if $(filter loongarch,$(ARCH)),$K/fs_img.o)
 	$(OBJDUMP) -S $K/kernel > $K/kernel.asm
 	$(OBJDUMP) -t $K/kernel | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $K/kernel.sym
+
+# LoongArch: embed filesystem image as a raw binary object linked into the kernel.
+# This creates symbols _binary_fs_img_start, _binary_fs_img_end, _binary_fs_img_size.
+ifeq ($(ARCH),loongarch)
+$K/fs_img.o: fs.img
+	$(OBJCOPY) -I binary -O elf64-loongarch -B loongarch64 $< $@
+endif
 
 # 通用规则:编译 kernel/ 下的 .c -> .o
 $K/%.o: $K/%.c
@@ -129,13 +172,22 @@ tags: $(OBJS)
 
 ULIB = $U/ulib.o $U/usys.o $U/printf.o $U/umalloc.o
 
-_%: %.o $(ULIB) $U/user.ld
-	$(LD) $(LDFLAGS) -T $U/user.ld -o $@ $< $(ULIB)
+_%: %.o $(ULIB) $(USERLD)
+	$(LD) $(LDFLAGS) -T $(USERLD) -e main -o $@ $< $(ULIB)
 	$(OBJDUMP) -S $@ > $*.asm
 	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $*.sym
 
 $U/usys.S : $U/usys.pl
 	perl $U/usys.pl > $U/usys.S
+ifeq ($(ARCH),loongarch)
+	# Convert RISC-V instructions/registers to LoongArch.
+	# "li a7, N"  -> "ori $$a7, $$r0, N"  (N fits 12 bits for syscall numbers)
+	# "ecall"     -> "syscall 0"
+	# "ret"       -> "jirl $$r0, $$ra, 0"
+	sed -i 's/li a7, /ori $$a7, $$r0, /' $U/usys.S
+	sed -i 's/ecall/syscall 0/' $U/usys.S
+	sed -i 's/ret/jirl $$r0, $$ra, 0/' $U/usys.S
+endif
 
 $U/usys.o : $U/usys.S
 	$(CC) $(CFLAGS) -c -o $U/usys.o $U/usys.S
@@ -200,13 +252,27 @@ ifndef CPUS
 CPUS := 3
 endif
 
+ifeq ($(ARCH),loongarch)
+# LoongArch QEMU: -bios with raw binary (not -kernel), requires >= 1G RAM
+QEMUOPTS = -machine virt -cpu la464 -m 1G -smp $(CPUS) -nographic
+QEMUOPTS += -nic none
+else
 QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
 QEMUOPTS += -global virtio-mmio.force-legacy=false
 QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
+endif
 
-qemu: check-qemu-version $K/kernel fs.img
+qemu: check-qemu-version $K/kernel
+ifeq ($(ARCH),loongarch)
+	$(OBJCOPY) -O binary $K/kernel $K/kernel.bin
+	$(QEMU) $(QEMUOPTS) -bios $K/kernel.bin
+else
 	$(QEMU) $(QEMUOPTS)
+endif
+
+fs.img: mkfs/mkfs README $(UPROGS)
+	mkfs/mkfs fs.img README $(UPROGS)
 
 .gdbinit: .gdbinit.tmpl-riscv
 	sed "s/:1234/:$(GDBPORT)/" < $^ > $@
@@ -220,7 +286,12 @@ print-gdbport:
 
 QEMU_VERSION := $(shell $(QEMU) --version | head -n 1 | sed -E 's/^QEMU emulator version ([0-9]+\.[0-9]+)\..*/\1/')
 check-qemu-version:
-	@if [ "$(shell echo "$(QEMU_VERSION) >= $(MIN_QEMU_VERSION)" | bc)" -eq 0 ]; then \
-		echo "ERROR: Need qemu version >= $(MIN_QEMU_VERSION)"; \
+	@qemu_major=$$(echo $(QEMU_VERSION) | cut -d. -f1); \
+	 qemu_minor=$$(echo $(QEMU_VERSION) | cut -d. -f2); \
+	 min_major=$$(echo $(MIN_QEMU_VERSION) | cut -d. -f1); \
+	 min_minor=$$(echo $(MIN_QEMU_VERSION) | cut -d. -f2); \
+	 if [ "$$qemu_major" -lt "$$min_major" ] || \
+	    { [ "$$qemu_major" -eq "$$min_major" ] && [ "$$qemu_minor" -lt "$$min_minor" ]; }; then \
+		echo "ERROR: Need qemu version >= $(MIN_QEMU_VERSION), found $(QEMU_VERSION)"; \
 		exit 1; \
 	fi
