@@ -216,6 +216,11 @@ sys_open(void)
   f->vnode = vp;
   f->readable = !(omode & O_WRONLY);
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+  f->appendable = (omode & O_APPEND) ? 1 : 0;
+
+  // L4.1: O_APPEND sets initial offset to current file size
+  if(f->appendable && vp->type == V_FILE)
+    f->off = vp->size;
 
   return fd;
 }
@@ -321,6 +326,33 @@ sys_exec(void)
   for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)
     kfree(argv[i]);
   return -1;
+}
+
+uint64
+sys_mount(void)
+{
+  int dev;
+  char path[MAXPATH], fstype[16];
+
+  if(argstr(0, path, MAXPATH) < 0)
+    return -1;
+  argint(1, &dev);
+  if(argstr(2, fstype, sizeof(fstype)) < 0)
+    return -1;
+
+  if(vfs_mount(path, dev, fstype) == 0)
+    return -1;
+  return 0;
+}
+
+uint64
+sys_umount(void)
+{
+  char path[MAXPATH];
+
+  if(argstr(0, path, MAXPATH) < 0)
+    return -1;
+  return vfs_umount(path);
 }
 
 uint64

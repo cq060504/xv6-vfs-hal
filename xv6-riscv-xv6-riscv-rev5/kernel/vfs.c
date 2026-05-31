@@ -94,6 +94,7 @@ vfs_mount(char *path, uint dev, char *fstype)
     }
   }
   if(mp == 0) return 0;
+  mp->valid = 0;  // not yet fully mounted
 
   // Resolve mountpoint path to a vnode (except for root mount)
   if(strncmp(path, "/", 128) == 0){
@@ -102,14 +103,19 @@ vfs_mount(char *path, uint dev, char *fstype)
     mpoint = vfs_namei(path);
     if(mpoint == 0 || mpoint->type != V_DIR){
       if(mpoint) vput(mpoint);
-      mp->ops = 0;  // let caller free — we don't have a destructor for mount itself yet
+      // L1: clean up mount resources on failure
+      if(mp->ops && mp->ops->unmount)
+        mp->ops->unmount(mp);
+      kfree((void*)mp);
       return 0;
     }
     // Check nothing is already mounted here
     for(i = 1; i < nmount; i++){
       if(mounttable[i]->mountpoint == mpoint){
         vput(mpoint);
-        mp->ops = 0;
+        if(mp->ops && mp->ops->unmount)
+          mp->ops->unmount(mp);
+        kfree((void*)mp);
         return 0;
       }
     }
@@ -121,12 +127,55 @@ vfs_mount(char *path, uint dev, char *fstype)
 
   if(nmount >= NMOUNT){
     if(mpoint) vput(mpoint);
-    mp->ops = 0;
+    if(mp->ops && mp->ops->unmount)
+      mp->ops->unmount(mp);
+    kfree((void*)mp);
     return 0;
   }
   mounttable[nmount] = mp;
   nmount++;
+  mp->valid = 1;  // now fully mounted
   return mp;
+}
+
+int
+vfs_umount(char *path)
+{
+  int i, idx;
+  struct mount *mp = 0;
+
+  if(nmount == 0) return -1;
+
+  for(idx = 0; idx < nmount; idx++){
+    if(strncmp(mounttable[idx]->path, path, 128) == 0){
+      mp = mounttable[idx];
+      break;
+    }
+  }
+  if(mp == 0 || !mp->valid) return -1;
+
+  // Root mount cannot be unmounted first
+  if(idx == 0) return -1;
+
+  // Tell the filesystem to clean up
+  if(mp->ops && mp->ops->unmount)
+    mp->ops->unmount(mp);
+
+  mp->valid = 0;
+
+  // Remove from mounttable
+  for(i = idx; i < nmount - 1; i++)
+    mounttable[i] = mounttable[i + 1];
+  mounttable[nmount - 1] = 0;
+  nmount--;
+
+  // Release mountpoint vnode
+  if(mp->mountpoint)
+    vput(mp->mountpoint);
+
+  // Free mount struct
+  kfree((void*)mp);
+  return 0;
 }
 
 struct vnode*
@@ -371,6 +420,7 @@ vfs_open(char *path, int mode, struct vnode **vp)
 int
 vfs_read(struct vnode *vp, uint64 buf, int n, uint off)
 {
+  // Caller (file.c) must hold vn_lock(vp) to serialize concurrent reads/writes
   if(vp->ops == 0 || vp->ops->read == 0) return -1;
   return VOP_READ(vp, buf, n, off);
 }
@@ -378,6 +428,7 @@ vfs_read(struct vnode *vp, uint64 buf, int n, uint off)
 int
 vfs_write(struct vnode *vp, uint64 buf, int n, uint off)
 {
+  // Caller (file.c) must hold vn_lock(vp) to serialize concurrent reads/writes
   if(vp->ops == 0 || vp->ops->write == 0) return -1;
   return VOP_WRITE(vp, buf, n, off);
 }

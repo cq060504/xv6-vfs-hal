@@ -1,3 +1,6 @@
+#ifndef _VFS_H_
+#define _VFS_H_
+
 #include "types.h"
 #include "sleeplock.h"
 
@@ -22,6 +25,7 @@ struct vnode_ops {
 
 struct vfs_ops {
   struct vnode* (*root)(struct mount*);
+  void (*unmount)(struct mount*);
 };
 
 struct vnode {
@@ -34,10 +38,12 @@ struct vnode {
   int ref;
   struct sleeplock lock;
   uint inum;         // FS-specific inode number; meaningful only within mp
+  uint size;         // cached file size (for O_APPEND etc.); maintained by FS backend
   void *priv;        // FS-private data (e.g. struct inode*)
 };
 
 struct mount {
+  int valid;                // 1 after successfully added to mounttable, 0 otherwise
   struct vfs_ops *ops;
   struct vnode *root;       // root vnode of this filesystem
   struct vnode *mountpoint; // parent vnode where this FS is attached; NULL for root mount
@@ -77,6 +83,7 @@ void          vn_lock(struct vnode*);
 void          vn_unlock(struct vnode*);
 
 struct mount* vfs_mount(char*, uint, char*);
+int           vfs_umount(char*);
 struct mount* vfs_lookup_mount(struct vnode*);
 struct mount* vfs_find_mountpoint(struct vnode*);
 
@@ -100,3 +107,5 @@ int           vfs_truncate(struct vnode*);
 void          vfs_register(struct mount* (*)(uint), char*);
 struct mount* xv6fs_mount(uint);
 struct mount* ext2_mount(uint);
+
+#endif

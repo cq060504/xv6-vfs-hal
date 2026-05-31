@@ -67,6 +67,7 @@ xv6fs_vnode_from_inode(struct inode *ip, uint dev, struct mount *mp)
   vp->ops = &xv6fs_vnops;
   vp->priv = priv;
   vp->inum = ip->inum;
+  vp->size = ip->size;
   return vp;
 }
 
@@ -155,6 +156,8 @@ xv6fs_write(struct vnode *vp, uint64 buf, int n, uint off)
     end_op();
     if(r != n1) break;
   }
+  if(i > 0 && off + i > (int)ip->size)
+    vp->size = ip->size;
   return (i == n ? n : -1);
 }
 
@@ -469,6 +472,7 @@ xv6fs_truncate(struct vnode *vp)
   begin_op();
   ilock(ip);
   itrunc(ip);
+  vp->size = 0;
   iunlock(ip);
   end_op();
   return 0;

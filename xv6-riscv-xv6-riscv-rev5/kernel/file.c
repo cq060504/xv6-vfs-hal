@@ -139,6 +139,9 @@ filewrite(struct file *f, uint64 addr, int n)
     ret = devsw[f->major].write(1, addr, n);
   } else if(f->type == FD_INODE){
     vn_lock(f->vnode);
+    // L4.1: O_APPEND: seek to current file size before each write
+    if(f->appendable)
+      f->off = f->vnode->size;
     ret = vfs_write(f->vnode, addr, n, f->off);
     if(ret > 0)
       f->off += ret;

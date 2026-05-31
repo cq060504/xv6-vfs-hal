@@ -3,6 +3,7 @@ struct file {
   int ref; // reference count
   char readable;
   char writable;
+  char appendable; // O_APPEND: seek to vnode->size before each write
   struct pipe *pipe; // FD_PIPE
   struct vnode *vnode;  // FD_INODE and FD_DEVICE
   uint off;          // FD_INODE

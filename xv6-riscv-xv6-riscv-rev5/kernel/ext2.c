@@ -34,6 +34,7 @@ struct ext2_vnode_priv {
   struct ext2_mount_priv *mp;
   uint  inum;
   int   dirty;
+  int   orphaned;  // unlink set links_count=0; destroy() does the actual free
 };
 
 // ---------------------------------------------------------------------------
@@ -104,6 +105,7 @@ ext2_vnode_alloc(struct ext2_mount_priv *mp, uint inum, struct ext2_inode_disk *
   priv->mp  = mp;
   priv->inum = inum;
   priv->dirty = 0;
+  priv->orphaned = 0;
 
   ushort mode = ino->i_mode & 0xF000;
   if(mode == 0x4000)      vp->type = V_DIR;
@@ -125,16 +127,26 @@ ext2_vnode_alloc(struct ext2_mount_priv *mp, uint inum, struct ext2_inode_disk *
   vp->ops   = &ext2_vnops;
   vp->priv  = priv;
   vp->inum  = inum;
+  vp->size  = ino->i_size;
   return vp;
 }
+
+// forward declarations for functions used in ext2_destroy
+static void ext2_i_truncate(struct ext2_vnode_priv *priv);
+static void ext2_ifree(struct ext2_mount_priv *mp, uint inum);
 
 static void
 ext2_destroy(void *arg)
 {
   struct ext2_vnode_priv *priv = (struct ext2_vnode_priv*)arg;
   if(priv == 0) return;
-  if(priv->dirty && priv->mp)
+  if(priv->orphaned){
+    // L4.2: deferred free -- unlink marked us orphaned, now last ref gone
+    ext2_i_truncate(priv);
+    ext2_ifree(priv->mp, priv->inum);
+  } else if(priv->dirty && priv->mp){
     write_inode(priv->mp, priv->inum, &priv->ino);
+  }
   kfree((void*)priv);
 }
 
@@ -570,6 +582,7 @@ ext2_write(struct vnode *vp, uint64 buf, int n, uint off)
   }
   if(off > ino->i_size){
     ino->i_size = off;
+    vp->size = off;
     priv->dirty = 1;
   }
   // B6: update modification time on write
@@ -765,14 +778,14 @@ ext2_unlink(struct vnode *dir, char *name)
         bwrite(bp);
         brelse(bp);
 
-        // Decrement link count; free if zero
+        // Decrement link count; if zero, mark orphaned (actual free in destroy)
         ino.i_links_count--;
         if(ino.i_links_count == 0){
           struct vnode *victim = ext2_iget(dp->mp, inum);
           if(victim){
             struct ext2_vnode_priv *vp = (struct ext2_vnode_priv*)victim->priv;
-            ext2_i_truncate(vp);
-            ext2_ifree(dp->mp, inum);
+            vp->orphaned = 1;
+            write_inode(dp->mp, inum, &ino);
             vput(victim);
           }
         } else {
@@ -901,6 +914,7 @@ ext2_truncate(struct vnode *vp)
 {
   struct ext2_vnode_priv *priv = (struct ext2_vnode_priv*)vp->priv;
   ext2_i_truncate(priv);
+  vp->size = 0;
   // B6: update modification time
   ext2_update_time(priv, 0, 1);
   return 0;
@@ -973,6 +987,22 @@ ext2_mount(uint dev)
 }
 
 // ---------------------------------------------------------------------------
+// unmount
+// ---------------------------------------------------------------------------
+static void
+ext2_unmount(struct mount *mp)
+{
+  struct ext2_mount_priv *priv = (struct ext2_mount_priv*)mp->priv;
+  if(priv){
+    vput(mp->root);
+    kfree((void*)priv);
+  }
+  mp->priv = 0;
+  mp->root = 0;
+  mp->ops = 0;
+}
+
+// ---------------------------------------------------------------------------
 // ops tables
 // ---------------------------------------------------------------------------
 static struct vnode_ops ext2_vnops = {
@@ -992,5 +1022,6 @@ static struct vnode_ops ext2_vnops = {
 };
 
 static struct vfs_ops ext2_vfsops = {
-  .root = ext2_root,
+  .root    = ext2_root,
+  .unmount = ext2_unmount,
 };

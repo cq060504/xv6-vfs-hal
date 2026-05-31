@@ -158,6 +158,9 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 UPROGS=\
 	$U/_cat\
 	$U/_echo\
+	$U/_ext2test1\
+	$U/_ext2test2\
+	$U/_ext2test3\
 	$U/_forktest\
 	$U/_grep\
 	$U/_init\
@@ -181,11 +184,15 @@ fs.img: mkfs/mkfs README $(UPROGS)
 
 -include kernel/*.d user/*.d hal/*/*.d
 
+ext2.img:
+	dd if=/dev/zero of=ext2.img bs=1M count=10
+	mkfs.ext2 -F ext2.img
+
 clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*/*.o */*.d */*.asm */*.sym \
 	hal/*/*.o hal/*/*.d hal/*/*.asm hal/*/*.sym \
-	$K/kernel fs.img \
+	$K/kernel fs.img ext2.img \
 	mkfs/mkfs .gdbinit \
         $U/usys.S \
 	$(UPROGS)
@@ -204,6 +211,8 @@ QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nogr
 QEMUOPTS += -global virtio-mmio.force-legacy=false
 QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
+QEMUOPTS += -drive file=ext2.img,if=none,format=raw,id=x1
+QEMUOPTS += -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1
 
 qemu: check-qemu-version $K/kernel fs.img
 	$(QEMU) $(QEMUOPTS)
