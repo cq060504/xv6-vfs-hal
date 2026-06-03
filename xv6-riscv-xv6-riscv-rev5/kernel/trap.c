@@ -224,4 +224,3 @@ devintr()
     return 0;
   }
 }
-

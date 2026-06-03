@@ -619,32 +619,38 @@ LoongArch PTE:
 
 ### 当前验收状态
 
-LoongArch 移植已经进入 `usertests -q` 后段调试阶段。前序测试已基本通过，当前明确失败点是 `MAXVAplus`：
+LoongArch 移植已经通过：
 
-```text
-test MAXVAplus:
-usertrap(): unexpected scause 0xf pid=6516
-  sepc=0x2290 stval=0x400000000000
-usertrap(): unexpected scause 0xf pid=6517
-  sepc=0x2290 stval=0x800000000000
-MAXVAplus: oops wrote 0x0001000000000000
-FAILED
-SOME TESTS FAILED
+```sh
+python3 test-xv6.py -q usertests
 ```
 
-已完成的关键修复：
-- LoongArch TLB refill handler 已恢复为 `hal/loongarch/hal_tlbrefill.S`。
-- 使用 `lddir/ldpte/tlbfill`，匹配当前 4 级页表和 `PWCL/PWCH` 配置。
-- refill 专用 CSR 编号已按 LoongArch 手册修正：`TLBRSAVE=0x8b`，`TLBREHI=0x8e`，`TLBRELO0=0x8c`，`TLBRELO1=0x8d`。
-- Docker 内 `make ARCH=loongarch` 已通过；QEMU 短跑能进入 `usertests` 并通过前序 copy 测试。
+此前 `MAXVAplus` 阻塞已解决。最终验证是在恢复 `user/usertests.c` 原始 `MAXVA/TRAPFRAME` 检查后完成的。
 
-### 当前策略
+### 已解决的关键问题
 
-优先目标不是完善长期架构，而是在不违反 LoongArch 技术要求的前提下，以最小改动通过 xv6 测试。后续再回头优化页表格式、TLB refill 性能和异常路径。
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| `MAXVAplus` 高地址写入未稳定失败 | LoongArch 曾把 `MAXVA` 放宽到 `1<<46`，高 VA 可能在 TLB lookup/refill 中按硬件 VALEN 截断或别名到低页 | 恢复 xv6 用户地址契约：`MAXVA=1<<38`，`TRAPFRAME=MAXVA-2*PGSIZE` |
+| C 路径和 refill 路径边界不一致 | `copyin/copyinstr/vmfault` 可检查 VA，但 TLB refill 仍可能先执行 `lddir/ldpte` | `hal_tlbrefill.S` 在 `lddir` 前拒绝 `VA >= MAXVA` 和 `VA < 2*PGSIZE` |
+| 高 VA 别名低 VPPN 后可能命中用户数据 | 用户程序从 VA 0 开始，低页可被用户映射 | LoongArch 用户程序从 `0x2000` 链接；`exec` 低 2 页映射为非用户 guard |
+| 用户堆上限和 trapframe 语义分散 | RISC-V 直接用 `TRAPFRAME`，LoongArch trapframe 不再使用用户高 VA 映射 | 新增统一 `USER_TOP = TRAPFRAME`，`growproc()` 和 `sys_sbrk()` 使用该边界 |
 
-### 下一步排查计划
+### 关键实现点
 
-1. 检查 `MAXVA` 定义是否满足 xv6 原始 `MAXVAplus` 测试语义。当前 LoongArch 4 级页表允许更大的 VA 范围，但 xv6 测试期望高地址不能被用户写入。
-2. 检查 `walk()`、`walkaddr()`、`copyin()`、`copyout()`、`copyinstr()` 是否在入口处统一拒绝 `va >= MAXVA` 或非规范用户地址。
-3. 检查 LoongArch TLB refill 对高地址 miss 的处理：对于 `0x400000000000`、`0x800000000000` 这类地址，不能让 `lddir/ldpte` 因索引截断或符号扩展命中低地址页表。
-4. 简化优先方案：把用户地址上限先收敛到 xv6 原版兼容范围，确保所有用户态内存访问路径和 TLB refill 路径一致拒绝越界地址。
+- `hal/loongarch/arch.h`：`MAXVA` 恢复为 `1ULL << 38`，异常码转换避免 LoongArch ecode 和 RISC-V scause 语义混淆。
+- `hal/loongarch/memlayout.h`：`TRAPFRAME = MAXVA - 2*PGSIZE`，`USER_TOP = TRAPFRAME`；LoongArch 实际 trapframe 由 `KSave1` 指向内核地址。
+- `kernel/vm.c`：`copyin()`、`copyinstr()`、`vmfault()` 统一拒绝 `va >= MAXVA`；`vmfault()` 同时拒绝低 2 页。
+- `kernel/exec.c`：LoongArch 下预留低 2 页非用户 guard；ELF 装载可处理 `ph.vaddr > sz` 的用户程序起始地址。
+- `hal/loongarch/hal_tlbrefill.S`：TLB refill 入口先检查 `TLBRBADV`，非法 VA 不进入 `lddir/ldpte`。
+- `hal/loongarch/user.ld` 和 `Makefile`：LoongArch 用户程序入口调整到 `0x2000`。
+- `kernel/vm.c` LoongArch 初始化：写 `RVACFG=8` 作为硬件层辅助限制，软件仍以 xv6 `MAXVA` 为准。
+- `hal/loongarch/kernel.ld` 和 `hal_start.c`：固定 `.tlbrefill`/trampoline 页，boot stack 移出 `.bss`，多核启动只让 0 号核初始化 data/bss。
+
+### 后续整理方向
+
+1. 把 LoongArch 用户 VA 策略分成“xv6 测试兼容模式”和“宽 VA 实验模式”，避免后续误把硬件能力当作 xv6 用户 ABI。
+2. 继续清理 LoongArch PTE 到 TLBRELO 的属性转换，降低 refill 汇编里的隐含格式知识。
+3. 增加针对 `MAXVA`、`1<<40`、`1<<48` 和低页别名访问的独立回归测试。
+
+详细调试记录见 `others/loongarch-usertests-maxva-fix.md`。

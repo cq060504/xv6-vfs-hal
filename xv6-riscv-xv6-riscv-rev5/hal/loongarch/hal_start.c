@@ -11,7 +11,8 @@ void main();
 void timerinit();
 void kernelvec();
 
-__attribute__ ((aligned (16))) char stack0[4096 * NCPU];
+__attribute__ ((aligned (16), section(".bootstack"))) char stack0[4096 * NCPU];
+static volatile uint64 boot_done;
 
 // Linker symbols: _data_lma = flash address of .data initial values
 //                 _data_start = RAM VMA of .data
@@ -22,39 +23,50 @@ __attribute__ ((section(".text.entry")))
 void
 start()
 {
+  int id = r_cpuid();
+  w_tp(id);
+
   // Output early debug message via UART
   // Note: This happens before UART init in main(), use direct MMIO write
   volatile char *uart_lsr = (volatile char*)0x1FE001E5;  // LSR register
   volatile char *uart_thr = (volatile char*)0x1FE001E0;  // THR register
-  const char *msg = "start: begin\n";
-  while (*msg) {
-    // Wait for THR to be empty
-    while ((*uart_lsr & (1 << 5)) == 0) ;
-    *uart_thr = *msg++;
+
+  if(id == 0){
+    const char *msg = "start: begin\n";
+    while (*msg) {
+      // Wait for THR to be empty
+      while ((*uart_lsr & (1 << 5)) == 0) ;
+      *uart_thr = *msg++;
+    }
+
+    // Copy .data from flash LMA to RAM VMA.
+    uint64 *src = (uint64*)_data_lma;
+    uint64 *dst = (uint64*)_data_start;
+    while(dst < (uint64*)_bss_start) *dst++ = *src++;
+
+    // Zero .bss in RAM. The boot stacks live in .bootstack, not .bss.
+    dst = (uint64*)_bss_start;
+    while(dst < (uint64*)_bss_end) *dst++ = 0;
+
+    __sync_synchronize();
+    boot_done = 0x6c613634646f6e65ULL;
+
+    msg = "start: calling main\n";
+    while (*msg) {
+      while ((*uart_lsr & (1 << 5)) == 0) ;
+      *uart_thr = *msg++;
+    }
+  } else {
+    while(boot_done != 0x6c613634646f6e65ULL)
+      ;
+    __sync_synchronize();
   }
-
-  // Copy .data from flash LMA to RAM VMA.
-  uint64 *src = (uint64*)_data_lma;
-  uint64 *dst = (uint64*)_data_start;
-  while(dst < (uint64*)_bss_start) *dst++ = *src++;
-
-  // Zero .bss in RAM.
-  dst = (uint64*)_bss_start;
-  while(dst < (uint64*)_bss_end) *dst++ = 0;
 
   // NOTE: Timer interrupt NOT enabled here - will be enabled in main()
   // after trapinithart() is called. This prevents early timer interrupts
   // before kernel is fully initialized.
 
   w_eentry((uint64)kernelvec);
-  int id = r_cpuid();
-  w_tp(id);
-
-  msg = "start: calling main\n";
-  while (*msg) {
-    while ((*uart_lsr & (1 << 5)) == 0) ;
-    *uart_thr = *msg++;
-  }
 
   main();
 }

@@ -56,4 +56,7 @@
 //   TRAMPOLINE (the same page as in the kernel)
 #define TRAPFRAME (TRAMPOLINE - PGSIZE)
 
+// One byte past the largest user address that sbrk may create.
+#define USER_TOP TRAPFRAME
+
 #endif

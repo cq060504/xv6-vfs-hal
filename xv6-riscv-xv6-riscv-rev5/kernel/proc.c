@@ -170,8 +170,11 @@ freeproc(struct proc *p)
   p->state = UNUSED;
 }
 
-// Create a user page table for a given process, with no user memory,
-// but with trampoline and trapframe pages.
+// Create a user page table for a given process, with no user memory.
+// RISC-V also maps the trampoline and trapframe pages into this pagetable.
+// LoongArch reaches its low trampoline through DMW0 in PLV0 and reaches the
+// trapframe through KSave1, so those fixed low VAs remain available to user
+// heap mappings.
 pagetable_t
 proc_pagetable(struct proc *p)
 {
@@ -182,6 +185,7 @@ proc_pagetable(struct proc *p)
   if(pagetable == 0)
     return 0;
 
+#ifndef ARCH_loongarch
   // map the trampoline code (for system call return)
   // at the highest user virtual address.
   // only the supervisor uses it, on the way
@@ -200,6 +204,7 @@ proc_pagetable(struct proc *p)
     uvmfree(pagetable, 0);
     return 0;
   }
+#endif
 
   return pagetable;
 }
@@ -209,8 +214,10 @@ proc_pagetable(struct proc *p)
 void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
+#ifndef ARCH_loongarch
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+#endif
   uvmfree(pagetable, sz);
 }
 
@@ -240,7 +247,7 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if(sz + n > TRAPFRAME) {
+    if(sz + n < sz || sz + n > USER_TOP) {
       return -1;
     }
     if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {

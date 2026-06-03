@@ -26,6 +26,7 @@
 #define CSR_TLBELO1 0x13   // TLB Entry Low 1
 #define CSR_PGDL    0x19   // Page Table Base (low half addr space)
 #define CSR_PGDH    0x1A   // Page Table Base (high half addr space)
+#define CSR_RVACFG  0x1F   // Reduced Virtual Address Configuration
 #define CSR_CPUID   0x20   // Core ID (= mhartid)
 #define CSR_TCFG    0x41   // Timer Config: enable + period
 #define CSR_TVAL    0x42   // Timer Value: countdown
@@ -62,6 +63,8 @@
 #define ESTAT_IS_HWI    (1L << 12)  // external hardware interrupt pending
 #define ESTAT_ECODE_SHIFT 16
 #define ESTAT_ECODE_MASK  (0x3FULL << ESTAT_ECODE_SHIFT)
+#define ESTAT_ESUBCODE_SHIFT 22
+#define ESTAT_ESUBCODE_MASK  (0x1FFULL << ESTAT_ESUBCODE_SHIFT)
 
 // ============================================================
 //  LoongArch exception codes (ESTAT.Ecode)
@@ -74,11 +77,14 @@
 #define EXCCODE_PNR    5    // page not readable
 #define EXCCODE_PNX    6    // page not executable
 #define EXCCODE_PPI    7    // page privilege violation
+#define EXCCODE_ADE    8    // address error (EsubCode: 0=ADEF, 1=ADEM)
 #define EXCCODE_SYS    11   // system call
 #define EXCCODE_BP     12   // breakpoint
 #define EXCCODE_INE    13   // instruction not exist
 #define EXCCODE_IPE    14   // instruction privilege error
 #define EXCCODE_FPDIS  15   // FPU disabled
+#define EXCCODE_SXD    16   // 128-bit vector disabled
+#define EXCCODE_ASXD   17   // 256-bit vector disabled
 #define EXCCODE_FPE    18   // floating point exception
 // Backward-compat aliases
 #define EXCCODE_TLBL EXCCODE_PIL
@@ -203,6 +209,11 @@ static inline void w_ticlr(uint64 x) {
   asm volatile("csrwr %0, 0x44" : : "r"(x));
 }
 
+// --- RVACFG (0x1F): Reduced Virtual Address Configuration ---
+static inline void w_rvacfg(uint64 x) {
+  asm volatile("csrwr %0, 0x1F" : : "r"(x));
+}
+
 // --- DMW0 (0x180): Direct Mapping Window 0 ---
 static inline void w_dmw0(uint64 x) {
   asm volatile("csrwr %0, 0x180" : : "r"(x));
@@ -269,6 +280,7 @@ static inline uint64 r_ra(void) {
 static inline uint64 estat_to_scause(uint64 estat) {
   uint64 ecode = (estat >> ESTAT_ECODE_SHIFT) & 0x3F;
   uint64 is_bits = estat & 0x1FFF;
+  uint64 esubcode = (estat >> ESTAT_ESUBCODE_SHIFT) & 0x1FF;
 
   // Interrupts: Ecode=0, IS bits indicate source
   if (ecode == EXCCODE_INT) {
@@ -279,7 +291,9 @@ static inline uint64 estat_to_scause(uint64 estat) {
     return 0x8000000000000000ULL | ecode;
   }
 
-  // Exceptions — map LoongArch Ecode → RISC-V scause for trap.c compatibility
+  // Exceptions: map LoongArch Ecode to RISC-V scause values.
+  // Do not pass LoongArch Ecode values through directly; several collide
+  // with unrelated RISC-V causes (for example LA FPD=0xf vs RV store fault).
   switch (ecode) {
     case EXCCODE_SYS:   return 8;    // syscall
     case EXCCODE_PIL:   return 13;   // load page fault
@@ -288,13 +302,13 @@ static inline uint64 estat_to_scause(uint64 estat) {
     case EXCCODE_PME:   return 15;   // page modification → store page fault
     case EXCCODE_PNR:   return 13;   // page not readable → load page fault
     case EXCCODE_PNX:   return 12;   // page not executable → instr page fault
-    case EXCCODE_PPI:   return 13;   // page privilege → load page fault
+    case EXCCODE_PPI:   return 13;   // page privilege violation
+    case EXCCODE_ADE:   // avoid colliding LoongArch ADE ecode 8 with RISC-V syscall
+      return esubcode == 0 ? 12 : 13;
     case EXCCODE_INE:   return 2;    // illegal instruction
-    case EXCCODE_IPE:   return 2;    // instruction privilege → illegal instr
+    case EXCCODE_IPE:   return 12;   // instruction privilege → instr page fault
     case EXCCODE_BP:    return 3;    // breakpoint
-    case EXCCODE_FPDIS: return ecode; // FPU disabled — pass through
-    case EXCCODE_FPE:   return ecode; // FP exception — pass through
-    default:            return ecode;
+    default:            return 0x100 | ecode;
   }
 }
 
@@ -350,9 +364,9 @@ typedef uint64 *pagetable_t;
 #define PXSHIFT(level)  (PGSHIFT+(9*(level)))
 #define PX(level, va)   ((((uint64)(va)) >> PXSHIFT(level)) & PXMASK)
 
-// Keep user VAs below the sign-extension boundary so high test addresses
-// cannot alias back into the low user range on LA64.
-#define MAXVA (1ULL << 46)
+// Keep the xv6 user address contract close to RISC-V Sv39. LoongArch hardware
+// still supports a wider VA, but the TLB refill path rejects VAs >= MAXVA.
+#define MAXVA (1ULL << 38)
 
 // PGDL holds the physical page table base (no mode bits like satp)
 #define MAKE_SATP(pagetable) ((uint64)(pagetable))

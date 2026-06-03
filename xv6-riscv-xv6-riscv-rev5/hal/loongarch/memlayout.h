@@ -11,9 +11,9 @@
 // Kernel .data/.bss at VMA 0x00400000 (low RAM).
 // Kernel .text at VMA 0x1c000000 (flash).
 //
-// TRAMPOLINE/TRAPFRAME/KSTACK go at the top of the virtual address space,
-// following the RISC-V layout pattern. This avoids collisions with the
-// identity-mapped free RAM range.
+// Kernel stack and low trampoline pages are placed where LoongArch DMW0 can
+// reach the backing physical memory directly. The trapframe is accessed via
+// KSave1, so it does not need a user page-table mapping.
 
 #ifndef _HAL_LOONGARCH_MEMLAYOUT_H_
 #define _HAL_LOONGARCH_MEMLAYOUT_H_
@@ -39,7 +39,7 @@
 #define KERNBASE 0x1C000000L
 #define PHYSTOP (0x00400000L + 124*1024*1024)
 
-// LoongArch DMW0 (VSEG=0, PLV=PLV0) identity-maps ALL VA[63:60]=0 → PA=VA.
+// LoongArch DMW0 (VSEG=0, PLV=PLV0) identity-maps ALL VA[63:60]=0 -> PA=VA.
 // This covers our entire 39-bit VA space. We exploit this by placing kernel
 // objects at physical addresses where they actually exist:
 //
@@ -47,11 +47,15 @@
 //   KSTACK     = 0x08000000+ (low RAM above PHYSTOP, unused by kalloc)
 //   TRAPFRAME  —  per-process, accessed via KSave1 holding p->trapframe KVA
 //
-// TRAPFRAME (user VA) only matters for user-mode (PLV3) page-table lookups.
-// Kernel-mode (PLV0) trapframe access uses the direct-mapped KVA from KSave1,
-// never the TRAPFRAME VA, so DMW0 identity-mapping of TRAPFRAME VA is harmless.
+// TRAMPOLINE is the actual low VA used by EENTRY/userret. TRAPFRAME keeps the
+// original xv6 high user-VA contract for sbrk/usertests only; LoongArch never
+// maps or dereferences that VA on the trap path.
 #define TRAMPOLINE 0x1C009000L
-#define TRAPFRAME  0x1C007000L
+#define TRAPFRAME  (MAXVA - 2*PGSIZE)
+
+// One byte past the largest user address that sbrk may create.
+// RISC-V uses TRAPFRAME as this guard; keep the same contract for tests.
+#define USER_TOP TRAPFRAME
 
 // Kernel stacks: placed at physical addresses with actual RAM (0x08000000+),
 // below QEMU's 256MB low-RAM ceiling (0x10000000). DMW0 identity-maps VA=PA.

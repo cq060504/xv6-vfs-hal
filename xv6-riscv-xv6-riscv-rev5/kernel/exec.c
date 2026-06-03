@@ -54,6 +54,22 @@ kexec(char *path, char **argv)
   if((pagetable = proc_pagetable(p)) == 0)
     goto bad;
 
+#ifdef ARCH_loongarch
+  // QEMU la464 ignores VA bits above VALEN in TLB lookup, so addresses
+  // like 1<<48 can alias VPPN 0. Keep the low two pages mapped as
+  // PLV0-only guards so such aliases trap instead of hitting user data.
+  for(sz = 0; sz < 2*PGSIZE; sz += PGSIZE){
+    char *guard = kalloc();
+    if(guard == 0)
+      goto bad;
+    memset(guard, 0, PGSIZE);
+    if(mappages(pagetable, sz, PGSIZE, (uint64)guard, PTE_R) < 0){
+      kfree(guard);
+      goto bad;
+    }
+  }
+#endif
+
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
     if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
@@ -67,6 +83,8 @@ kexec(char *path, char **argv)
     if(ph.vaddr % PGSIZE != 0)
       goto bad;
     uint64 sz1;
+    if(ph.vaddr > sz)
+      sz = ph.vaddr;
     if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz, flags2perm(ph.flags))) == 0)
       goto bad;
     sz = sz1;

@@ -2,7 +2,7 @@ OUTPUT_ARCH("loongarch")
 
 SECTIONS
 {
- . = 0x0;
+ . = 0x2000;
 
   .text : {
     *(.text .text.*)

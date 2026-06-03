@@ -18,6 +18,14 @@ tlb_refill_entry:
         ori     $t0, $t0, 12
         csrwr   $t0, 0x8e
 
+        # Reject non-user VAs before lddir can truncate them to 48 bits.
+        csrrd   $t0, 0x89              # TLBRBADV
+        srli.d  $t0, $t0, 38           # MAXVA is 1 << 38
+        bnez    $t0, .Ltlbr_invalid
+        csrrd   $t0, 0x89
+        srli.d  $t0, $t0, 13           # reject VA < 2*PGSIZE
+        beqz    $t0, .Ltlbr_invalid
+
         csrrd   $t0, 0x19              # PGDL: root page-table physical base
 
         lddir   $t0, $t0, 3            # Dir2, VA[47:39]
@@ -49,6 +57,12 @@ tlb_refill_entry:
 
         ldpte   $t0, 0                 # even page -> TLBRELO0
         ldpte   $t0, 1                 # odd page  -> TLBRELO1
+        csrrd   $t0, 0x8c              # clear memory-PTE P/W bits
+        bstrins.d $t0, $r0, 8, 7       # TLBRELO bits [8:7] are reserved
+        csrwr   $t0, 0x8c
+        csrrd   $t0, 0x8d
+        bstrins.d $t0, $r0, 8, 7
+        csrwr   $t0, 0x8d
         tlbfill
 
         csrrd   $t0, 0x8b

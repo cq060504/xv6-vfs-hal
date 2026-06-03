@@ -143,6 +143,12 @@ kvminithart()
     (39UL << 0)  | (9UL << 6)
   ));
 
+  // QEMU la464 reports VALEN=48. RVACFG can reduce mapped-mode VA
+  // validity by at most 8 bits, so this makes >=1<<40 trap as ADE.
+  // xv6's stricter MAXVA=1<<38 is enforced in walk/copy/vmfault and
+  // in the software TLB refill handler below.
+  w_rvacfg(8);
+
   // Set TLB refill entry point for user-space TLB misses
   extern void tlb_refill_entry(void);
   uint64 tlbr_entry = (uint64)tlb_refill_entry;
@@ -471,6 +477,9 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
+    if(va0 >= MAXVA)
+      return -1;
+
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0) {
       if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
@@ -501,6 +510,9 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 
   while(got_null == 0 && max > 0){
     va0 = PGROUNDDOWN(srcva);
+    if(va0 >= MAXVA)
+      return -1;
+
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
@@ -563,6 +575,12 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   uint64 mem;
   struct proc *p = myproc();
 
+  if (va >= MAXVA)
+    return 0;
+
+  if (va < 2*PGSIZE)
+    return 0;
+
   if (va >= p->sz)
     return 0;
   va = PGROUNDDOWN(va);
@@ -570,6 +588,11 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   // Check if page already exists in page table.
   pte_t *pte = walk(pagetable, va, 0);
   if (pte && (*pte & PTE_V)) {
+    if((*pte & PTE_U) == 0)
+      return 0;
+    if(read == 0 && (*pte & PTE_W) == 0)
+      return 0;
+
     // Page exists but TLB entry is stale/invalid.
     // Re-fill TLB directly, bypassing the lddir/ldpte handler.
     tlb_fill_from_pte(va, *pte);

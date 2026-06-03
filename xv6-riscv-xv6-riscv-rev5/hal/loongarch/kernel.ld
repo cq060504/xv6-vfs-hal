@@ -14,18 +14,25 @@ SECTIONS
     *hal_entry.o(.text)
     *hal_start.o(.text)
     *hal_uart.o(.text)
-    *(.text .text.*)
+  }
 
-    /* TLB refill handler on its own page (4KB-aligned, not in execution flow) */
-    . = ALIGN(0x1000);
+  /* TLB refill and trampoline live at fixed pages used by memlayout.h. */
+  . = 0x1c008000;
+  .tlbrefill : {
     *(.tlbrefill)
+  }
 
-    /* Trampoline page */
-    . = ALIGN(0x1000);
+  . = 0x1c009000;
+  .trampoline : {
     _trampoline = .;
     *(trampsec)
     . = ALIGN(0x1000);
     ASSERT(. - _trampoline == 0x1000, "error: trampoline larger than one page");
+  }
+
+  . = 0x1c00a000;
+  .text.rest : {
+    *(.text .text.*)
     PROVIDE(etext = .);
   }
 
@@ -48,6 +55,12 @@ SECTIONS
     *(.bss .bss.*)
     . = ALIGN(4096);
     _bss_end = .;
+  }
+
+  .bootstack (NOLOAD) : {
+    . = ALIGN(16);
+    *(.bootstack)
+    . = ALIGN(4096);
   }
 
   PROVIDE(end = .);
