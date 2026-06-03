@@ -1,0 +1,120 @@
+================================================================================
+当前状态 & 需要查阅的 LoongArch 技术细节（第三轮）
+================================================================================
+
+当前进展：
+  ✅ TLB refill handler 正确（CSR 0x8C/0x8D/0x8E + PS=12 + tlbfill）
+  ✅ CPUS=1 下系统完整启动到用户态 init 进程
+  ✅ 定时器中断周期性触发（'.' heartbeat 可见）
+  ✅ RAM disk 嵌入（fs.img → objcopy → 内核链接）
+  ✅ 用户程序交叉编译（LoongArch syscall ABI）
+  ❌ init 输出只有首字符"I"→ uartwrite 阻塞在 UART TX 中断上
+  ❌ CPUS=3 非确定性 panic（pop_off/acquire/release/kerneltrap）
+
+================================================================================
+一、16550A UART 在 QEMU LoongArch virt 上的行为 [P0] [阻塞所有]
+================================================================================
+
+现象：
+  init 调用 printf("init: starting sh\n") → write() 系统调用 → uartwrite()。
+  uartwrite 写入第一个字节 'i' 后设置 tx_busy=1，然后在 sleep() 中永久阻塞，
+  因为 UART TX 中断从未触发。
+
+需要确认：
+
+Q1.1 在 QEMU LoongArch virt 机器上，16550A UART 是否支持 TX 中断？
+  - 写入 IER (offset 1) 的 bit 0 (RX) 和 bit 1 (TX) 是否能正确使能中断？
+  - QEMU 的 16550a 模型是否在 LoongArch 上正确触发 TX 中断？
+
+Q1.2 LoongArch virt 的 UART (0x1FE001E0) 中断如何路由到 EIOINTC？
+  - UART 中断是边沿触发还是电平触发？
+  - EIOINTC 的 IRQ 31 是否确实对应 UART0？
+  - 中断触发后，EIOINTC 的 ISR 寄存器中哪个 bit 会置位？
+
+Q1.3 当前 EIOINTC hal_irq_claim() 实现是否正确？
+  当前代码：读取 Core ISR at offset 0x0000 + hart*8 (64-bit bitmap)
+  需要确认：
+  - Core ISR 的偏移量是否正确？（0x0000 + hart*8）
+  - ISR bit 31 对应 UART0 吗？
+  - 读取 ISR 是否会自动清除 pending 位？（当前代码读取后手动写回清除）
+
+Q1.4 是否可以不依赖 UART 中断，改用 LSR 轮询方式输出？
+  - 即 uartwrite 中不调用 sleep()，而是直接循环等待 LSR.TX_IDLE
+  - 这是最简单的临时方案，绕过所有 UART 中断/EIOINTC 问题
+
+================================================================================
+二、多核启动的竞态条件 [P0] [阻塞 CPUS>1]
+================================================================================
+
+现象：
+  CPUS=1: 稳定启动
+  CPUS=2: ~60% 成功率
+  CPUS=3: ~20% 成功率
+  失败模式：panic: pop_off / acquire / release / kerneltrap（非确定性）
+
+已尝试的修复：
+  - 限制 UART 调试输出仅 core 0 → 无效
+  - 所有 core 并行执行 .data/.bss 初始化（幂等操作）→ 无效
+
+需要确认：
+
+Q2.1 LoongArch 的原子指令（amswap/LL-SC）在 QEMU la464 上是否完全支持？
+  - __sync_lock_test_and_set 生成的 amswap_db.w 指令是否在 la464 上正确实现？
+  - 如果 amswap 不可用，GCC 是否会降级为 LL-SC？降级后的指令是否正常工作？
+  - 是否有已知的 QEMU la464 原子指令 bug？
+
+Q2.2 LoongArch 多核缓存一致性在 QEMU 上是否正确模拟？
+  - 多个 core 同时访问同一个 spinlock 变量（在 .bss 中）是否会正确竞争？
+  - DMW0 的 MAT=01 (CC, coherent cached) 是否保证了多核间的缓存一致性？
+
+Q2.3 QEMU la464 的复位行为：
+  - 多个 core 是否严格同时从 0x1C000000 开始执行？
+  - 还是 core 1/2 需要由 core 0 通过某种协议唤醒？
+  - 如果 core 1/2 也是从 0x1C000000 自启动，它们各自的 tp (CPUID) 值是什么？
+
+Q2.4 w_tp() 和 cpuid() 的正确性：
+  - 当前代码：start() 中 r_cpuid() 读取 CSR 0x20，w_tp() 写入 $r2
+  - 多个 core 同时执行 r_cpuid() 是否每个 core 读到自己的 ID？
+  - $r2 (tp) 寄存器在后续函数调用（main → consoleinit → ...）中是否会被 clobber？
+
+================================================================================
+三、定时器频率与 rdtime.d 的行为 [P1]
+================================================================================
+
+Q3.1 rdtime.d 在 QEMU la464 上的行为：
+  - rdtime.d 是否实现？返回值的递增频率是多少？
+  - 如果未实现，是否会触发 INE (illegal instruction) 异常？
+
+Q3.2 当前 TCFG 配置的定时器频率：
+  - InitVal=100000000 在 1GHz 时钟下理论上 ≈0.1s
+  - QEMU la464 的实际时钟频率是多少？
+  - 观察到的 '.' heartbeat 间隔是否与预期一致？
+
+================================================================================
+四、EIOINTC 寄存器布局的最终确认 [P1]
+================================================================================
+
+Q4.1 QEMU hw/intc/loongarch_extioi.c 中的寄存器偏移量：
+  需要确认以下偏移值（当前代码使用）：
+  - Core ISR:  0x0000 + hart*8 (64-bit)
+  - Core En:   0x0040 + hart*4 (32-bit)
+  - IRQ En:    0x0080 + (irq/32)*4 (32-bit)
+  - IP Map:    0x0400 + irq (8-bit)
+
+  如果以上有误，请给出正确的偏移量表。
+
+Q4.2 UART 和 virtio 的 IRQ 编号：
+  - UART0 是否确实是 IRQ 31？
+  - virtio 是否确实是 IRQ 32？
+  - 这些编号在 QEMU LoongArch virt 中是否有文档记录？
+
+================================================================================
+五、errata / QEMU 版本相关 [P2]
+================================================================================
+
+Q5.1 Docker 中的 QEMU 版本：
+  请运行: qemu-system-loongarch64 --version
+  输出版本号，以便确认是否有已知的 TLB/原子指令/CSR bug。
+
+Q5.2 是否有已知的 QEMU la464 限制/bug 列表可以参考？
+  - 例如某些 CSR 不支持、某些指令未实现等

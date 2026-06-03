@@ -130,6 +130,19 @@ kvminithart()
   // Flush all TLB entries before enabling MMU
   sfence_vma();
 
+  // Configure 4-level page table walk (must match walk() and TLB handler):
+  //   Level 3 (PGD): VA[47:39], base=39, width=9
+  //   Level 2 (PUD): VA[38:30], base=30, width=9
+  //   Level 1 (PMD): VA[29:21], base=21, width=9
+  //   Level 0 (PTE): VA[20:12], base=12, width=9, 64-bit entries
+  asm volatile("csrwr %0, 0x1C" : : "r"(
+    (12UL << 0)  | (9UL << 5)  | (21UL << 10) |
+    (9UL << 15)  | (30UL << 20) | (9UL << 25)
+  ));
+  asm volatile("csrwr %0, 0x1D" : : "r"(
+    (39UL << 0)  | (9UL << 6)
+  ));
+
   // Set TLB refill entry point for user-space TLB misses
   extern void tlb_refill_entry(void);
   uint64 tlbr_entry = (uint64)tlb_refill_entry;
@@ -148,10 +161,12 @@ kvminithart()
 // that corresponds to virtual address va.  If alloc!=0,
 // create any required page-table pages.
 //
-// The risc-v Sv39 scheme has three levels of page-table
+// LoongArch uses four levels of page-table pages in this port
+// (RISC-V still uses three via its own MAXVA/PX definitions).
 // pages. A page-table page contains 512 64-bit PTEs.
 // A 64-bit virtual address is split into five fields:
-//   39..63 -- must be zero.
+//   48..63 -- must be zero.
+//   39..47 -- 9 bits of level-3 index.
 //   30..38 -- 9 bits of level-2 index.
 //   21..29 -- 9 bits of level-1 index.
 //   12..20 -- 9 bits of level-0 index.
@@ -162,7 +177,7 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
   if(va >= MAXVA)
     panic("walk");
 
-  for(int level = 2; level > 0; level--) {
+  for(int level = 3; level > 0; level--) {
     pte_t *pte = &pagetable[PX(level, va)];
     if(*pte & PTE_V) {
       pagetable = (pagetable_t)PTE2PA(*pte);
@@ -517,10 +532,31 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   }
 }
 
+// Fill one TLB entry for VA from a PTE, bypassing lddir/ldpte.
+// Masks P(b7) and W(b8) from memory PTE → TLBELO format.
+// Uses tlbfill (random slot), works in non-TLBR context.
+static void
+tlb_fill_from_pte(uint64 va_page, pte_t pte_val)
+{
+  // Clear P(b7) and W(b8) — reserved in TLBELO
+  uint64 hi, lo;
+  lo = pte_val;
+  asm volatile("srli.d %0, %1, 9" : "=r"(hi) : "r"(lo));
+  asm volatile("slli.d %0, %0, 9" : "+r"(hi));
+  lo &= 0x7F;                       // keep V,D,PLV,MAT,G
+  lo |= hi;                         // combine PPN + flags
+
+  asm volatile("csrwr %0, 0x12" : : "r"(lo));           // TLBELO0
+  asm volatile("csrwr %0, 0x13" : : "r"(lo));           // TLBELO1
+  asm volatile("csrwr %0, 0x11" : : "r"(va_page));      // TLBEHI
+  // TLBIDX.NE=0 → tlbfill writes a valid entry
+  asm volatile("csrwr %0, 0x10" : : "r"(0x0C000000));   // PS=12,NE=0
+  asm volatile("tlbfill");
+}
+
 // allocate and map user memory if process is referencing a page
 // that was lazily allocated in sys_sbrk().
-// returns 0 if va is invalid or already mapped, or if
-// out of physical memory, and physical address if successful.
+// returns 0 if va is invalid, non-zero if handled.
 uint64
 vmfault(pagetable_t pagetable, uint64 va, int read)
 {
@@ -530,9 +566,17 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   if (va >= p->sz)
     return 0;
   va = PGROUNDDOWN(va);
-  if(ismapped(pagetable, va)) {
-    return 0;
+
+  // Check if page already exists in page table.
+  pte_t *pte = walk(pagetable, va, 0);
+  if (pte && (*pte & PTE_V)) {
+    // Page exists but TLB entry is stale/invalid.
+    // Re-fill TLB directly, bypassing the lddir/ldpte handler.
+    tlb_fill_from_pte(va, *pte);
+    return 1;  // handled
   }
+
+  // Lazy allocation for genuinely unmapped page.
   mem = (uint64) kalloc();
   if(mem == 0)
     return 0;
@@ -541,6 +585,7 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
     kfree((void *)mem);
     return 0;
   }
+  tlb_fill_from_pte(va, PA2PTE(mem) | PTE_W | PTE_U | PTE_R | PTE_V);
   return mem;
 }
 

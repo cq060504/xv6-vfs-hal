@@ -1,89 +1,64 @@
 # LoongArch software TLB refill handler.
 #
-# Invoked on TLB miss when PG=1, DA=0.  DMW0 covers PLV0 with
-# VA[63:60]=0, so this handler only fires for PLV3 user-space
-# accesses (or accesses with VA[63:60]!=0, none in our 39-bit space).
-#
-# CRITICAL: In TLB refill context (IsTLBR=1), the CPU uses
-#   TLBREHI / TLBRELO0 / TLBRELO1  (NOT TLBEHI/TLBELO0/1!).
-#   TLBREHI.PS is NOT auto-filled — software MUST set it to 12 (4KB).
-#   Use tlbfill (random slot), not tlbwr (indexed).
-#
-# DMW0 identity-maps all low PA, so page-table loads from PGDL
-# cannot cause nested TLB misses.
+# The CPU enters here through CSR.TLBRENTRY with DA=1/PG=0, so low
+# physical addresses are directly reachable. The page-table layout is the
+# four-level 9-9-9-9 scheme configured in kvminithart() via PWCL/PWCH.
 
-# .tlbrefill section — placed on its own 4KB-aligned page in kernel.ld,
-# outside the main .text execution flow to prevent accidental execution.
 .section .tlbrefill, "ax"
 .balign 4096
 .globl tlb_refill_entry
 tlb_refill_entry:
-        # --- Step 1: Read VA and page table root ---
-        csrrd   $t0, 0x7               # t0 = BADV (faulting VA)
-        csrrd   $t1, 0x19              # t1 = PGDL (page table PA)
+        # Use TLBRSAVE as the single scratch save slot; do not touch ERA/PRMD.
+        csrwr   $t0, 0x8b              # TLBRSAVE
 
-        # --- Step 2: Level 2 walk ---
-        srli.d  $t2, $t0, 30           # PX(2) = (VA >> 30) & 0x1FF
-        andi    $t2, $t2, 0x1FF
-        slli.d  $t2, $t2, 3
-        add.d   $t2, $t1, $t2          # &pte = PGDL + PX(2)*8
-        ld.d    $t2, $t2, 0            # t2 = L2 PTE
-        andi    $t3, $t2, 1            # check V
-        beqz    $t3, .Lfail
+        # TLBREHI.VPPN is set by hardware, but PS is software-owned.
+        csrrd   $t0, 0x8e              # TLBREHI
+        srli.d  $t0, $t0, 6
+        slli.d  $t0, $t0, 6
+        ori     $t0, $t0, 12
+        csrwr   $t0, 0x8e
 
-        # Extract L1 table PA: PTE[59:12] = PA[59:12]
-        srli.d  $t1, $t2, 12
-        slli.d  $t1, $t1, 12           # t1 = L1 PA
+        csrrd   $t0, 0x19              # PGDL: root page-table physical base
 
-        # --- Step 3: Level 1 walk ---
-        srli.d  $t2, $t0, 21           # PX(1) = (VA >> 21) & 0x1FF
-        andi    $t2, $t2, 0x1FF
-        slli.d  $t2, $t2, 3
-        add.d   $t2, $t1, $t2
-        ld.d    $t2, $t2, 0            # t2 = L1 PTE
-        andi    $t3, $t2, 1
-        beqz    $t3, .Lfail
+        lddir   $t0, $t0, 3            # Dir2, VA[47:39]
+        andi    $t0, $t0, 1
+        beqz    $t0, .Ltlbr_invalid
+        csrrd   $t0, 0x19
+        lddir   $t0, $t0, 3
+        addi.d  $t0, $t0, -1
 
-        # Extract L0 table PA
-        srli.d  $t1, $t2, 12
-        slli.d  $t1, $t1, 12           # t1 = L0 PA
+        lddir   $t0, $t0, 2            # Dir1, VA[38:30]
+        andi    $t0, $t0, 1
+        beqz    $t0, .Ltlbr_invalid
+        csrrd   $t0, 0x19
+        lddir   $t0, $t0, 3
+        addi.d  $t0, $t0, -1
+        lddir   $t0, $t0, 2
+        addi.d  $t0, $t0, -1
 
-        # --- Step 4: Level 0 walk (leaf) ---
-        srli.d  $t2, $t0, 12           # PX(0) = (VA >> 12) & 0x1FF
-        andi    $t2, $t2, 0x1FF
-        slli.d  $t2, $t2, 3
-        add.d   $t2, $t1, $t2
-        ld.d    $t2, $t2, 0            # t2 = leaf PTE
-        andi    $t3, $t2, 1
-        beqz    $t3, .Lfail
+        lddir   $t0, $t0, 1            # Dir0, VA[29:21]
+        andi    $t0, $t0, 1
+        beqz    $t0, .Ltlbr_invalid
+        csrrd   $t0, 0x19
+        lddir   $t0, $t0, 3
+        addi.d  $t0, $t0, -1
+        lddir   $t0, $t0, 2
+        addi.d  $t0, $t0, -1
+        lddir   $t0, $t0, 1
+        addi.d  $t0, $t0, -1
 
-        # --- Step 5: Set TLBREHI.PS = 12 (4KB) ---
-        # TLBREHI.VPPN is auto-filled by hardware from the faulting VA.
-        # But TLBREHI.PS[5:0] must be set by software (not auto-filled!).
-        csrrd   $t3, 0x11              # read TLBREHI (= TLBEHI reg, but in refill context)
-        srli.d  $t3, $t3, 6            # clear bits [5:0]
-        slli.d  $t3, $t3, 6            # VPPN preserved, PS=0
-        ori     $t3, $t3, 12           # PS = 12 (4KB page)
-        csrwr   $t3, 0x11              # write back TLBREHI
+        ldpte   $t0, 0                 # even page -> TLBRELO0
+        ldpte   $t0, 1                 # odd page  -> TLBRELO1
+        tlbfill
 
-        # --- Step 6: Fill TLB ---
-        # Clear TLBRELO1 (odd page invalid), write leaf PTE to TLBRELO0.
-        # Note: TLBELO bits [11:7] are reserved (always 0).  Our PTE may
-        # have PPN0 there from PA2PTE, but for PA<4GB, PTE[11:7]=0.
-        # The TLB hardware ignores these bits, so no masking needed.
-        csrwr   $r0, 0x13              # TLBRELO1 = 0 (odd page invalid)
-        csrwr   $t2, 0x12              # TLBRELO0 = leaf PTE
-        tlbfill                         # fill random TLB slot
-
-        # --- Step 7: Return ---
-        # ertn with IsTLBR=1: restores PLV/IE from TLBRPRMD, PC from TLBRERA,
-        # clears DA, sets PG=1, and then clears IsTLBR.
+        csrrd   $t0, 0x8b
         ertn
 
-.Lfail:
-        # Walk failed: write both entries invalid so the re-execute
-        # triggers a normal TLB exception (PIL/PIS/PIF) through EENTRY.
-        csrwr   $r0, 0x13
-        csrwr   $r0, 0x12
+.Ltlbr_invalid:
+        # Install an invalid matching entry so retry reaches the normal
+        # PIL/PIS/PIF path instead of looping forever in TLB refill.
+        csrwr   $r0, 0x8c              # TLBRELO0
+        csrwr   $r0, 0x8d              # TLBRELO1
         tlbfill
+        csrrd   $t0, 0x8b
         ertn

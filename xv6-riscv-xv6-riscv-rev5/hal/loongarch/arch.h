@@ -305,41 +305,36 @@ typedef uint64 pte_t;
 typedef uint64 *pagetable_t;
 
 // LoongArch PTE layout (4KB page):
-//   [63]   [62]     [61]   [60]  [59:12]          [11:7]    [6] [5:4] [3:2] [1] [0]
-//   NX_H  RPLV_H  RPLV    NX    PPN[47:0]        PPN_HI    G   MAT   PLV   D   V
-//
-// PPN is split: PPN[47:0]→PTE[59:12], PPN[52:48]→PTE[11:7]
 #define PTE_V     (1L << 0)              // valid
-#define PTE_D     (1L << 1)              // dirty (writable)
+#define PTE_D     (1L << 1)              // dirty
 #define PTE_PLV0  (0L << 2)             // kernel-only accessible
 #define PTE_PLV3  (3L << 2)             // user-mode accessible
 #define PTE_MAT   (1L << 4)             // MAT[0]=1: cacheable coherent
 #define PTE_G     (1L << 6)             // global
-#define PTE_NX    (1L << 60)            // no-execute
-#define PTE_RPLV  (1L << 61)            // restrict lower-PLV read
+#define PTE_P     (1L << 7)             // physical page exists
+#define PTE_HW_W  (1L << 8)             // hardware page-table writable
+#define PTE_NX    (1UL << 62)           // no-execute
+#define PTE_RPLV  (1UL << 63)           // restricted privilege enable
 
 // Map to RISC-V-compatible flag names used by kernel/vm.c.
 // LoongArch semantics: default is readable+executable (NX=0, RPLV=0).
-// D=1 makes the page writable, PLV[3:2]=11 allows user access.
+// D+W make the page writable, PLV[3:2]=11 allows user access.
 #define PTE_R  (0)          // readable (default when RPLV=0)
-#define PTE_W  PTE_D        // writable (D bit)
+#define PTE_W  (PTE_D | PTE_HW_W)
 #define PTE_X  (0)          // executable (default when NX=0)
 #define PTE_U  PTE_PLV3     // user accessible (PLV=3)
 
 // Combined flag for valid+cacheable — used when creating PTEs.
 // All leaf PTEs need MAT=01 (coherent) for proper memory access.
-#define PTE_V_CACHE  (PTE_V | PTE_MAT)
+#define PTE_V_CACHE  (PTE_V | PTE_MAT | PTE_P)
 
-// Physical address ↔ PTE conversion.
-// LoongArch PPN is split: PPN[47:0] at PTE[59:12], PPN[52:48] at PTE[11:7]
-// PPN = PA[55:12].  PPN[47:0] = PA[59:12],  PPN[52:48] = PA[55:48].
-// The (uint64) cast inside each macro handles pointer types (vm.c passes pagetable_t).
-#define PA2PTE(pa)  (((uint64)(pa) & 0x0FFFFFFFFFFF000ULL) | \
-                     ((((uint64)(pa) >> 48) & 0x1FUL) << 7))
-#define PTE2PA(pte) (((uint64)(pte) & 0x0FFFFFFFFFFF000ULL) | \
-                     ((((uint64)(pte) >> 7) & 0x1FUL) << 48))
+// Physical address <-> PTE conversion. LoongArch PTE bits [11:7] are
+// permission/control bits in the page-table format used here, so the
+// physical page number is kept in the normal aligned PA field.
+#define PA2PTE(pa)  ((uint64)(pa) & 0x0FFFFFFFFFFF000ULL)
+#define PTE2PA(pte) ((uint64)(pte) & 0x0FFFFFFFFFFF000ULL)
 
-#define PTE_FLAGS(pte) ((pte) & 0xFFFUL)
+#define PTE_FLAGS(pte) ((pte) & 0xE0000000000001FFUL)
 
 // ============================================================
 //  Page table walk macros (same algorithm as RISC-V Sv39)
@@ -350,13 +345,14 @@ typedef uint64 *pagetable_t;
 #define PGROUNDUP(sz)  (((sz)+PGSIZE-1) & ~(PGSIZE-1))
 #define PGROUNDDOWN(a) (((a)) & ~(PGSIZE-1))
 
-// 3-level page table: 9-9-9-12 addressing (same as Sv39)
+// 4-level page table: 9-9-9-9-12 addressing.
 #define PXMASK          0x1FF
 #define PXSHIFT(level)  (PGSHIFT+(9*(level)))
 #define PX(level, va)   ((((uint64)(va)) >> PXSHIFT(level)) & PXMASK)
 
-// MAXVA: for 3-level page table, 2^39 / 2 = 2^38 - 1 (sign extension)
-#define MAXVA (1ULL << (9 + 9 + 9 + 12 - 1))
+// Keep user VAs below the sign-extension boundary so high test addresses
+// cannot alias back into the low user range on LA64.
+#define MAXVA (1ULL << 46)
 
 // PGDL holds the physical page table base (no mode bits like satp)
 #define MAKE_SATP(pagetable) ((uint64)(pagetable))

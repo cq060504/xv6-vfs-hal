@@ -612,3 +612,39 @@ LoongArch PTE:
 1. 搭建 LoongArch 开发环境（交叉编译工具链 + QEMU 7.1+）
 2. 编写 LoongArch 最小启动代码（arch.h + memlayout.h + hal_entry.S）
 3. 目标：能进入 main() 并完成基本初始化
+
+---
+
+## 九、最新进展（2026-06-03）
+
+### 当前验收状态
+
+LoongArch 移植已经进入 `usertests -q` 后段调试阶段。前序测试已基本通过，当前明确失败点是 `MAXVAplus`：
+
+```text
+test MAXVAplus:
+usertrap(): unexpected scause 0xf pid=6516
+  sepc=0x2290 stval=0x400000000000
+usertrap(): unexpected scause 0xf pid=6517
+  sepc=0x2290 stval=0x800000000000
+MAXVAplus: oops wrote 0x0001000000000000
+FAILED
+SOME TESTS FAILED
+```
+
+已完成的关键修复：
+- LoongArch TLB refill handler 已恢复为 `hal/loongarch/hal_tlbrefill.S`。
+- 使用 `lddir/ldpte/tlbfill`，匹配当前 4 级页表和 `PWCL/PWCH` 配置。
+- refill 专用 CSR 编号已按 LoongArch 手册修正：`TLBRSAVE=0x8b`，`TLBREHI=0x8e`，`TLBRELO0=0x8c`，`TLBRELO1=0x8d`。
+- Docker 内 `make ARCH=loongarch` 已通过；QEMU 短跑能进入 `usertests` 并通过前序 copy 测试。
+
+### 当前策略
+
+优先目标不是完善长期架构，而是在不违反 LoongArch 技术要求的前提下，以最小改动通过 xv6 测试。后续再回头优化页表格式、TLB refill 性能和异常路径。
+
+### 下一步排查计划
+
+1. 检查 `MAXVA` 定义是否满足 xv6 原始 `MAXVAplus` 测试语义。当前 LoongArch 4 级页表允许更大的 VA 范围，但 xv6 测试期望高地址不能被用户写入。
+2. 检查 `walk()`、`walkaddr()`、`copyin()`、`copyout()`、`copyinstr()` 是否在入口处统一拒绝 `va >= MAXVA` 或非规范用户地址。
+3. 检查 LoongArch TLB refill 对高地址 miss 的处理：对于 `0x400000000000`、`0x800000000000` 这类地址，不能让 `lddir/ldpte` 因索引截断或符号扩展命中低地址页表。
+4. 简化优先方案：把用户地址上限先收敛到 xv6 原版兼容范围，确保所有用户态内存访问路径和 TLB refill 路径一致拒绝越界地址。

@@ -427,7 +427,6 @@ scheduler(void)
   struct cpu *c = mycpu();
 
   c->proc = 0;
-  int first_sched = 1;
   for(;;){
     // The most recent process to run may have had interrupts
     // turned off; enable them to avoid a deadlock if all
@@ -446,11 +445,6 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
-        if(first_sched) {
-          printf("scheduler: switching to pid %d ra=0x%lx sp=0x%lx\n",
-                 p->pid, p->context.ra, p->context.sp);
-          first_sched = 0;
-        }
         hal_switch(&c->context, &p->context);
 
         // Process is done running for now.
@@ -517,8 +511,6 @@ forkret(void)
 
   // Still holding p->lock from scheduler.
   release(&p->lock);
-
-  printf("forkret: first=%d pid=%d\n", first, p->pid);
 
   if (first) {
     // File system initialization must be run in the context of a

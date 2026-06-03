@@ -1,0 +1,46 @@
+QEMU-LoongArch
+QEMU-LoongArch 是 QEMU 开源模拟器对龙芯自主指令集架构 LoongArch 的完整支持实现，为开发者提供了一个无需物理龙芯硬件即可体验和开发 LoongArch 生态的强大工具。
+
+QEMU-LoongArch 支持User mode和System mode，支持启动 LoongArch 版 Linux 发行版（如 ArchLinux、UOS、Loongnix 等），模拟包括CPU、内存、存储、网络在内的全套硬件环境。
+
+仓库地址
+
+安装与使用
+可使用以下命令，安装社区或发行版维护的预编译版本:
+
+#  在 Ubuntu/Deepin 系统系统上通过 apt 进行安装
+sudo apt update
+sudo apt install qemu-system-loongarch64 qemu-utils
+使用这种方式安装预编译版本，可开箱即用，但 QEMU 版本可能较为落后。
+
+可使用源码编译方式，进行安装:
+
+#  安装依赖
+sudo apt-get install libglib2.0-0 libglib2.0-dev
+sudo apt install libpixman-1-0 libpixman-1-dev
+sudo apt install flex
+sudo apt install bison ninja-build
+sudo apt install gcc g++
+#  克隆官方仓库
+git clone https://github.com/qemu/qemu.git
+#  开始安装
+cd qemu/
+mkdir build
+cd build
+../configure --target-list=loongarch64-softmmu --enable-kvm --disable-werror --enable-vnc --enable-debug --enable-gdb
+#  如果有需求，请添加 sudo 权限
+make
+make install
+即可成功安装 QEMU 。
+
+QEMU 启动运行时，支持的参数选项包括:
+
+
+qemu-system-loongarch64 \
+  -m 8G \      #  指定分配内存大小
+  -cpu la464-loongarch-cpu \     #  指定模拟 CPU 型号
+  -machine virt \       #  指定模拟硬件凭条
+  -smp 4 \        #  指定 CPU 核心数
+  -bios ./QEMU_EFI.fd \       #  指定 BIOS 用于启动时加载和执行
+  -device virtio-gpu-pci \       #  指定 GPU 设备
+  -hda ./Loongnix-20.5.loongarch64.qcow2     #  指定虚拟机的硬盘镜像

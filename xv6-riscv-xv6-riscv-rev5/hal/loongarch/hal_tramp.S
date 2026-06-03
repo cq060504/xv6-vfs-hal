@@ -83,10 +83,8 @@ uservec:
         # Load kernel page table base.
         ld.d    $t1, $a0, 0
 
-        # Switch to kernel page table.
-        invtlb  0, $r0, $r0
+        # Switch to kernel page table (no invtlb — kernel uses DMW, not TLB).
         csrwr   $t1, 0x19              # PGDL = kernel page table
-        invtlb  0, $r0, $r0
 
         # Call usertrap().  Use $ra so usertrap() can return to userret.
         jirl    $ra, $t0, 0
@@ -96,7 +94,6 @@ userret:
         # usertrap() returns here with the user page table in a0.
 
         # Switch to user page table.
-        invtlb  0, $r0, $r0
         csrwr   $a0, 0x19              # PGDL = user page table
         invtlb  0, $r0, $r0
 

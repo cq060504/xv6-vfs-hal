@@ -204,6 +204,33 @@ void hal_start(void);
 
 ## 当前状态与下一步
 
+### 最新进展（2026-06-03）
+
+当前 LoongArch 版本已经能够启动到 `usertests -q`，前序测试基本通过；最新阻塞点集中在 `MAXVAplus`：
+
+```text
+test MAXVAplus:
+usertrap(): unexpected scause 0xf pid=6516
+  sepc=0x2290 stval=0x400000000000
+usertrap(): unexpected scause 0xf pid=6517
+  sepc=0x2290 stval=0x800000000000
+MAXVAplus: oops wrote 0x0001000000000000
+FAILED
+```
+
+已经恢复并验证 `hal/loongarch/hal_tlbrefill.S`：
+- `tlb_refill_entry` 放在 `.tlbrefill` 独立 4KB 页，符号地址为 `0x1c008000`。
+- 使用 LoongArch 标准 `lddir/ldpte/tlbfill` 做 TLB refill，匹配当前 4 级页表配置。
+- refill 专用 CSR 使用手册编号：`TLBRSAVE=0x8b`、`TLBREHI=0x8e`、`TLBRELO0/1=0x8c/0x8d`。
+- Docker 内 `make ARCH=loongarch` 通过，短 QEMU 验证可进入 `usertests`。
+
+当前策略：在不违反 LoongArch 技术要求的前提下，优先做最小化修复以通过测试，后续再优化页表/TLB 设计。
+
+下一步优先检查 `MAXVAplus`：
+1. LoongArch `MAXVA`、`walk()` 边界、`copyin/copyout` 边界是否和 xv6 原始测试语义一致。
+2. 对超过用户地址上限的 VA，应在进入页表 walk 或 TLB refill 前尽早拒绝，不能被符号扩展或 4 级 walk 映射到低地址。
+3. `stval=0x400000000000/0x800000000000` 对应高位地址访问，`scause=0xf` 是 store page fault；测试失败里的 “oops wrote 0x0001000000000000” 表示仍有越界写被接受。
+
 ### ✅ 已完成（第3-4周过渡：HAL 接口统一）
 
 #### 最终 RISC-V HAL 代码规模（共 19 个文件，1561 行）

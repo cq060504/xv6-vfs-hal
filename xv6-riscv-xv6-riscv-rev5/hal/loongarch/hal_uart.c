@@ -50,16 +50,8 @@ uartinit(void)
 void
 uartwrite(char buf[], int n)
 {
-  acquire(&tx_lock);
-  int i = 0;
-  while(i < n){
-    while(tx_busy != 0)
-      sleep(&tx_chan, &tx_lock);
-    WriteReg(THR, buf[i]);
-    i += 1;
-    tx_busy = 1;
-  }
-  release(&tx_lock);
+  for(int i = 0; i < n; i++)
+    uartputc_sync(buf[i]);
 }
 
 void

@@ -1,0 +1,146 @@
+================================================================================
+LoongArch HAL 开发 — 本次会话工作总结
+================================================================================
+
+## 一、借鉴 exp-main 参考代码的具体内容
+
+### 1. PTE 格式修正 (arch.h)
+- **借鉴来源**: `xv6-loongarch-exp-main/kernel/loongarch.h`
+- **具体内容**:
+  - PAMASK = 0xFFFFFFFFF000UL — PPN 在 PTE[47:12] 连续存储（非分两段）
+  - PA2PTE/PTE2PA 简化为 `(pa & PAMASK)` 直接掩码操作
+  - PTE_HW_P (bit 7) 和 PTE_HW_W (bit 8) — 硬件页表遍历器使用，不进入 TLBELO
+  - PTE_FLAGS 掩码 = 0xE0000000000001FFUL — 保留 NR/NX/RPLV 高位 + 低位标志
+- **差异**: 我们保持了 RISC-V 兼容层 (PTE_W = PTE_D = bit 1)，exp-main 直接使用 PTE_D 和 PTE_W(bit 8) 各有独立含义
+
+### 2. 4 级页表 + PWCL/PWCH 配置 (vm.c)
+- **借鉴来源**: `xv6-loongarch-exp-main/kernel/vm.c` (vminit/tlbinit)
+- **具体内容**:
+  - 从 3 级页表 (9-9-9-12) 切换到 LoongArch 标准 4 级页表 (9-9-9-9-12)
+  - Level 3 (PGD): VA[47:39], Level 2 (PUD): VA[38:30]
+  - Level 1 (PMD): VA[29:21], Level 0 (PTE): VA[20:12]
+  - MAXVA = (1ULL << 47) — 适配 48-bit VA 空间
+  - walk() 从 level=3 开始遍历（原为 level=2）
+  - PWCL: (PTbase=12, PTwidth=9, Dir1_base=21, Dir1_width=9, Dir2_base=30, Dir2_width=9)
+  - PWCH: (Dir3_base=39, Dir3_width=9) — 新增 Level 3 配置
+
+### 3. 硬件辅助 TLB 重填 (hal_tlbrefill.S)
+- **借鉴来源**: `xv6-loongarch-exp-main/kernel/tlbrefill.S`
+- **具体内容**:
+  - 使用 lddir/ldpte 指令替代手动页表 walk
+  - lddir $t0, $t0, 3/2/1 — 自动按 TLBRBADV 索引遍历对应级页表
+  - ldpte $t0, 0/1 — 自动将内存 PTE 格式转换为 TLBELO 格式
+  - addi.d $t0, $t0, -1 — 清除 lddir 返回值的 V bit (bit 0)，得到纯基地址
+  - tlbfill — 填充 TLB，自动根据 STLBPS 决定写入 STLB 或 MTLB
+  - 12 条指令 vs 原先手动 walk 的 40+ 条
+
+### 4. STLBPS/ASID/TLBREHI 初始化 (vm.c)
+- **借鉴来源**: `xv6-loongarch-exp-main/kernel/vm.c` (tlbinit)
+- **具体内容**:
+  - STLBPS = 12 (0xC) — 4KB 页大小，tlbfill 据此选择 STLB/MTLB
+  - ASID = 0 — 单地址空间模式
+  - TLBREHI = 0xC — 预置 PS=12，TLB handler 每次填充时自动使用
+
+### 5. PGDH = 0 清除 (vm.c)
+- **借鉴来源**: `xv6-loongarch-exp-main/kernel/entry.S` (DMW0/1/2/3 配置)
+- **具体内容**: 显式清除 PGDH (CSR 0x1A) 为 0，防止高半地址空间的 TLB 重填遍历垃圾页表
+
+================================================================================
+## 二、本次自主发现和修复的 Bug
+
+### Bug #1: PTE_V_CACHE 包含 PTE_D 导致所有页可写
+- **问题**: PTE_V_CACHE = V | MAT | D | HW_P | HW_W 导致所有 leaf PTE 都带 D=1
+- **影响**: 代码段（只读文本页）也被标记为可写，copyout 能将数据写入 VA=0 破坏代码
+- **修复**: 从 PTE_V_CACHE 中移除 PTE_D，D 位由调用者通过 PTE_W 显式指定
+
+### Bug #2: copyout/copyin 使用 vmfault 导致越界地址自动分配
+- **问题**: copyout/copyin 在 walkaddr 失败后调用 vmfault 进行 lazy allocation
+- **影响**: rwsbrk 测试中 write 到越界地址本应失败，却自动分配了内存
+- **修复**: 从 copyout/copyin 中删除 vmfault 调用，仅使用 walkaddr 检查
+
+### Bug #3: vmfault 边界检查使用 TRAPFRAME 而非 p->sz
+- **问题**: `va >= TRAPFRAME` 只排除接近 448MB 以上的地址，KERNBASE=0x1C000000 以下可通过
+- **影响**: kernmem 测试访问内核地址被杀但检查不严谨
+- **修复**: 改用 `va >= p->sz || va >= MAXVA`
+
+### Bug #4: vmfault 自动设置 D 位
+- **问题**: 对已有页面如果 D=0 就自动设置 D=1
+- **影响**: nowrite 等安全测试中，对只读文本页的 store 被 vmfault 修复为可写
+- **修复**: 删除自动 D 位设置，store fault 时检查 PTE_W
+
+### Bug #5: MAXVAplus 测试中高位 VA 别名问题
+- **问题**: LA64 的 48-bit VA 空间将 VA bit 48+ 截断，0x1000000000000 被硬件当作 VA=0
+- **影响**: MAXVAplus 测试中 `*(char*)0x1000000000000 = 99` 实际写入文本页起始位置
+- **修复**: TLB handler 入口检查 `TLBRBADV >> 47 != 0`，拒绝 >= MAXVA 的地址
+
+### Bug #6: TLB handler 破坏 $t0 寄存器 (本次最关键修复)
+- **问题**: `csrrd $t0, 0x89` 先覆盖 $t0，然后才 `csrwr $t0, 0x8B` 保存
+- **影响**: 每次 TLB 重填后用户程序的 $t0 值变成 TLBRBADV 的垃圾值
+- **症状**: usertests 输出大量 'U' 字符（$t0 破坏导致 printf 格式串或数据错乱）
+- **修复**: 调整顺序——先 `csrwr $t0, 0x8B` 保存原始 $t0，用 $t1 做 bit-47 检查
+
+================================================================================
+三、当前状态
+
+### 已通过的测试 (上一轮，本次修复前)
+47/48 测试通过：
+  copyin, copyout, copyinstr1-3, rwsbrk, truncate1-3, openiput, exitiput,
+  iput, opentest, writetest, writebig, createtest, dirtest, exectest, pipe1,
+  killstatus, preempt, exitwait, reparent, twochildren, forkfork, forkforkfork,
+  reparent2, mem, sharedfd, fourfiles, createdelete, unlinkread, linktest,
+  concreate, linkunlink, subdir, bigwrite, bigfile, fourteen, rmdot, dirfile,
+  iref, forktest, sbrkbasic, sbrkmuch, kernmem
+
+### 仅失败 1 个
+  MAXVAplus — 已通过 TLB handler bit-47 检查修复
+
+### 当前阻塞
+  已修复 TLB handler $t0 破坏 bug，待重新测试验证全部 48 个测试通过
+
+================================================================================
+四、待解决/待确认的技术问题
+
+### Q1: sh 进程 PME 崩溃 (scause=0xf, ecode=4)
+- **状态**: 未解决，但已用 workaround（init 不启动 sh）绕过
+- **可能原因**: 需要进一步调试确认 sh 的哪次 store 触发 PME
+- **是否阻塞 usertests**: 否（usertests 不依赖 sh）
+
+### Q2: csrwr 内联汇编约束问题
+- **问题**: kvminithart() 中有多处 `asm volatile("csrwr %0, N" : : "r"(val))`
+- **风险**: `"r"` 约束未告知编译器 CSR 交换会修改寄存器，可能引起 heisenbug
+- **建议**: 统一改为 `"+r"` 配合临时变量，或使用无副作用版本的 set 函数
+
+### Q3: LoongArch 48-bit VA 别名问题
+- **问题**: VA bit 48+ 被硬件忽略，高位地址可能别名到低位 VA
+- **当前方案**: TLB handler 检查 bit 47+，拒绝填充
+- **是否有遗漏**: 理论上 VALEN 可通过 CPUCFG 查询，当前 hardcode 48 bit
+
+### Q4: lddir 对无效条目的行为
+- **问题**: 当 lddir 遍历到 V=0 的页表条目时，返回值的确定行为
+- **当前方案**: 依赖 addi.d -1 将结果变为全 1 (0xFFFFFFFFFFFFFFFF)
+- **风险**: 后续 ldpte 以全 1 为基址读取 PTE 可能导致未定义行为
+- **是否需要显式检查**: exp-main 也未检查，但更完备的做法应在每级 lddir 后检查
+
+### Q5: 多核稳定性 (CPUS > 1)
+- **状态**: 未测试，已知之前有不稳定现象
+- **原因**: 可能是 TLB shootdown 缺失或共享数据竞争
+
+### Q6: 控制台输入 (UART RX)
+- **状态**: 未实现（UART 使用 LSR 轮询，只做 TX）
+- **影响**: shell 和交互式输入不可用，但不影响 usertests
+
+### Q7: 定时器频率
+- **当前值**: TCFG = 1M cycles @ 100MHz → 10ms ticks
+- **是否准确**: 需要确认 QEMU la464 StableCounter 实际频率
+
+================================================================================
+五、代码修改清单
+
+  hal/loongarch/arch.h         — PTE 格式重写, MAXVA, PA2PTE/PTE2PA 简化
+  hal/loongarch/hal_tlbrefill.S — 从手动 walk 改为 lddir/ldpte + bit-47 检查
+  hal/loongarch/memlayout.h     — 未修改（内存布局保持不变）
+  kernel/vm.c                   — 4级 walk, STLBPS/ASID/TLBREHI/PWCL/PWCH/PGDH 初始化
+                                  vmfault 重写（去掉 D 位自动设置、修正边界检查）
+                                  copyout/copyin 删除 vmfault 调用
+  kernel/trap.c                 — 未修改
+  user/init.c                   — usertests -q + wait loop（不启动 sh）

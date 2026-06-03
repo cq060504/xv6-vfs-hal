@@ -67,10 +67,10 @@ void timerinit()
   // Clear any pending timer interrupt
   w_ticlr(1);
 
-  // Configure timer in periodic mode (~0.1s between interrupts).
+  // Configure timer in periodic mode (~10ms between interrupts).
   // TCFG format: [0]=EN, [1]=PERIODIC, [31:2]=INIT_VAL.
-  // At ~1GHz clock, 100000000 counts ≈ 0.1s.
-  uint64 interval = 100000000;
+  // At ~1GHz clock, 10000000 counts ≈ 10ms.
+  uint64 interval = 10000000;
   w_tcfg((interval << TCFG_INITVAL_SHIFT) | TCFG_PERIOD | TCFG_EN);
 }
 
