@@ -24,9 +24,14 @@ struct ext2_mount_priv {
   struct ext2_superblock sb;
   struct ext2_bgdesc     bg;
   uint                   dev;
+  uint                   inode_size; // s_inode_size from superblock (may be 128 or 256)
+  uint                   fs_offset;  // block offset for merged-image (FSSIZE)
   struct sleeplock       lock;   // serialize meta-data allocations (balloc/ialloc)
   struct mount          *mnt;    // back-pointer to VFS mount (set by ext2_mount)
 };
+
+// offset macro: all ext2 disk blocks are shifted by mp->fs_offset
+#define EBLK(mp, b) ((b) + (mp)->fs_offset)
 
 // Per-vnode private data
 struct ext2_vnode_priv {
@@ -43,22 +48,24 @@ struct ext2_vnode_priv {
 static uint
 ino_block(struct ext2_mount_priv *mp, uint inum)
 {
-  uint blk = mp->bg.bg_inode_table + (inum - 1) / (BSIZE / sizeof(struct ext2_inode_disk));
+  //uint blk = mp->bg.bg_inode_table + (inum - 1) / (BSIZE / sizeof(struct ext2_inode_disk));
+  uint blk = mp->bg.bg_inode_table + (inum - 1) / (BSIZE / mp->inode_size);
   return blk;
 }
 
 static uint
-ino_offset(uint inum)
+ino_offset(struct ext2_mount_priv *mp, uint inum)
 {
-  return ((inum - 1) % (BSIZE / sizeof(struct ext2_inode_disk))) * sizeof(struct ext2_inode_disk);
+  //return ((inum - 1) % (BSIZE / sizeof(struct ext2_inode_disk))) * sizeof(struct ext2_inode_disk);
+  return ((inum - 1) % (BSIZE / mp->inode_size)) * mp->inode_size;
 }
 
 static int
 read_inode(struct ext2_mount_priv *mp, uint inum, struct ext2_inode_disk *ino)
 {
-  struct buf *bp = bread(mp->dev, ino_block(mp, inum));
+  struct buf *bp = bread(mp->dev, EBLK(mp, ino_block(mp, inum)));
   if(bp == 0) return -1;
-  memmove(ino, bp->data + ino_offset(inum), sizeof(struct ext2_inode_disk));
+  memmove(ino, bp->data + ino_offset(mp,inum), sizeof(struct ext2_inode_disk));
   brelse(bp);
   return 0;
 }
@@ -66,9 +73,9 @@ read_inode(struct ext2_mount_priv *mp, uint inum, struct ext2_inode_disk *ino)
 static int
 write_inode(struct ext2_mount_priv *mp, uint inum, struct ext2_inode_disk *ino)
 {
-  struct buf *bp = bread(mp->dev, ino_block(mp, inum));
+  struct buf *bp = bread(mp->dev, EBLK(mp, ino_block(mp, inum)));
   if(bp == 0) return -1;
-  memmove(bp->data + ino_offset(inum), ino, sizeof(struct ext2_inode_disk));
+  memmove(bp->data + ino_offset(mp,inum), ino, sizeof(struct ext2_inode_disk));
   bwrite(bp);
   brelse(bp);
   return 0;
@@ -169,7 +176,7 @@ ext2_iget(struct ext2_mount_priv *mp, uint inum)
 static int
 bitmap_alloc(struct ext2_mount_priv *mp, uint bb, uint nbits)
 {
-  struct buf *bp = bread(mp->dev, bb);
+  struct buf *bp = bread(mp->dev, EBLK(mp, bb));
   if(bp == 0) return -1;
   acquiresleep(&mp->lock);
   for(uint i = 1; i < nbits && i < BSIZE*8; i++){
@@ -190,7 +197,7 @@ bitmap_alloc(struct ext2_mount_priv *mp, uint bb, uint nbits)
 static void
 bitmap_free(struct ext2_mount_priv *mp, uint bb, uint n)
 {
-  struct buf *bp = bread(mp->dev, bb);
+  struct buf *bp = bread(mp->dev, EBLK(mp, bb));
   if(bp == 0) return;
   acquiresleep(&mp->lock);
   bp->data[n / 8] &= ~(1 << (n % 8));
@@ -203,7 +210,7 @@ bitmap_free(struct ext2_mount_priv *mp, uint bb, uint n)
 static void
 ext2_sb_write(struct ext2_mount_priv *mp)
 {
-  struct buf *sbp = bread(mp->dev, 1);
+  struct buf *sbp = bread(mp->dev, EBLK(mp, 1));
   if(sbp){
     memmove(sbp->data, &mp->sb, sizeof(mp->sb));
     bwrite(sbp);
@@ -246,9 +253,9 @@ ext2_ialloc(struct ext2_mount_priv *mp, ushort mode)
   if(inum < 0) return 0;
 
   // initialise inode
-  struct buf *bp = bread(mp->dev, ino_block(mp, inum));
+  struct buf *bp = bread(mp->dev, EBLK(mp, ino_block(mp, inum)));
   if(bp == 0){ bitmap_free(mp, mp->bg.bg_inode_bitmap, inum); return 0; }
-  struct ext2_inode_disk *ino = (struct ext2_inode_disk*)(bp->data + ino_offset(inum));
+  struct ext2_inode_disk *ino = (struct ext2_inode_disk*)(bp->data + ino_offset(mp,inum));
   memset(ino, 0, sizeof(struct ext2_inode_disk));
   ino->i_mode = mode;
   ino->i_links_count = 0;
@@ -311,7 +318,7 @@ ext2_bmap(struct ext2_vnode_priv *priv, uint lbn, int alloc)
       ino->i_block[12] = iblk;
       ino->i_blocks += 2;   // B7: indirect block itself
       // B4: rollback on bread failure
-      bp = bread(mp->dev, iblk);
+      bp = bread(mp->dev, EBLK(mp, iblk));
       if(bp == 0){
         ext2_bfree(mp, iblk);
         ino->i_block[12] = 0;
@@ -324,7 +331,7 @@ ext2_bmap(struct ext2_vnode_priv *priv, uint lbn, int alloc)
       priv->dirty = 1;
     }
     if(ino->i_block[12] == 0) return 0;
-    bp = bread(mp->dev, ino->i_block[12]);
+    bp = bread(mp->dev, EBLK(mp, ino->i_block[12]));
     if(bp == 0) return 0;
     indirect = (uint*)bp->data;
     if(indirect[lbn] == 0 && alloc){
@@ -356,7 +363,7 @@ ext2_dir_lookup(struct vnode *dir, char *name, struct vnode **result)
   while(off < ino->i_size){
     uint blk = ext2_bmap(dp, off / BSIZE, 0);
     if(blk == 0) return -1;
-    struct buf *bp = bread(dp->mp->dev, blk);
+    struct buf *bp = bread(dp->mp->dev, EBLK(dp->mp, blk));
     if(bp == 0) return -1;
 
     uint boff = off % BSIZE;
@@ -397,7 +404,7 @@ ext2_dir_add(struct vnode *dir, char *name, uint inum, uchar ftype)
   while(off < ino->i_size){
     uint blk = ext2_bmap(dp, off / BSIZE, 0);
     if(blk == 0) return -1;
-    struct buf *bp = bread(dp->mp->dev, blk);
+    struct buf *bp = bread(dp->mp->dev, EBLK(dp->mp, blk));
     if(bp == 0) return -1;
     uint boff = off % BSIZE;
     while(boff < BSIZE){
@@ -442,7 +449,7 @@ ext2_dir_add(struct vnode *dir, char *name, uint inum, uchar ftype)
   // Grow the directory by one block
   uint newblk = ext2_bmap(dp, off / BSIZE, 1);
   if(newblk == 0) return -1;
-  struct buf *bp = bread(dp->mp->dev, newblk);
+  struct buf *bp = bread(dp->mp->dev, EBLK(dp->mp, newblk));
   if(bp == 0) return -1;
   memset(bp->data, 0, BSIZE);
   struct ext2_dir_entry *de = (struct ext2_dir_entry*)bp->data;
@@ -474,7 +481,7 @@ ext2_i_truncate(struct ext2_vnode_priv *priv)
 
   // Free single indirect
   if(ino->i_block[12]){
-    struct buf *bp = bread(priv->mp->dev, ino->i_block[12]);
+    struct buf *bp = bread(priv->mp->dev, EBLK(priv->mp, ino->i_block[12]));
     if(bp){
       uint *indirect = (uint*)bp->data;
       for(uint i = 0; i < EXT2_NINDIRECT && indirect[i]; i++){
@@ -539,7 +546,7 @@ ext2_read(struct vnode *vp, uint64 buf, int n, uint off)
       continue;
     }
 
-    struct buf *bp = bread(priv->mp->dev, blk);
+    struct buf *bp = bread(priv->mp->dev, EBLK(priv->mp, blk));
     if(bp == 0) return -1;
     if(len > n - total) len = n - total;
     if(copyout(p->pagetable, buf + total, (char *)(bp->data + boff), len) < 0){
@@ -567,7 +574,7 @@ ext2_write(struct vnode *vp, uint64 buf, int n, uint off)
     uint blk = ext2_bmap(priv, off / BSIZE, 1);
     if(blk == 0) return -1;
     uint boff = off % BSIZE;
-    struct buf *bp = bread(priv->mp->dev, blk);
+    struct buf *bp = bread(priv->mp->dev, EBLK(priv->mp, blk));
     if(bp == 0) return -1;
     uint len = BSIZE - boff;
     if(len > n - total) len = n - total;
@@ -600,7 +607,10 @@ ext2_stat(struct vnode *vp, uint64 addr)
 
   st.dev     = vp->dev;
   st.ino     = priv->inum;
-  st.type    = vp->type;
+  // map VFS type (V_FILE=1,V_DIR=2,V_DEV=3) to stat type (T_DIR=1,T_FILE=2,T_DEVICE=3)
+  if(vp->type == V_DIR)      st.type = T_DIR;
+  else if(vp->type == V_DEV) st.type = T_DEVICE;
+  else                       st.type = T_FILE;
   st.nlink   = ino->i_links_count;
   st.size    = ino->i_size;
 
@@ -626,7 +636,7 @@ ext2_readdir(struct vnode *vp, uint64 buf, uint off)
     uint blk = ext2_bmap(dp, off / BSIZE, 0);
     if(blk == 0) return -1;
     uint boff = off % BSIZE;
-    struct buf *bp = bread(dp->mp->dev, blk);
+    struct buf *bp = bread(dp->mp->dev, EBLK(dp->mp, blk));
     if(bp == 0) return -1;
 
     struct ext2_dir_entry *de = (struct ext2_dir_entry*)(bp->data + boff);
@@ -726,7 +736,7 @@ ext2_unlink(struct vnode *dir, char *name)
   while(off < dino->i_size){
     uint blk = ext2_bmap(dp, off / BSIZE, 0);
     if(blk == 0) return -1;
-    struct buf *bp = bread(dp->mp->dev, blk);
+    struct buf *bp = bread(dp->mp->dev, EBLK(dp->mp, blk));
     if(bp == 0) return -1;
     uint boff = off % BSIZE;
     while(boff < BSIZE){
@@ -753,7 +763,7 @@ ext2_unlink(struct vnode *dir, char *name)
             int empty = 1;
             while(doff < vdp->ino.i_size){
               uint dblk = ext2_bmap(vdp, doff / BSIZE, 0);
-              struct buf *dbp = bread(dp->mp->dev, dblk);
+              struct buf *dbp = bread(dp->mp->dev, EBLK(dp->mp, dblk));
               uint dboff = doff % BSIZE;
               struct ext2_dir_entry *dde = (struct ext2_dir_entry*)(dbp->data + dboff);
               int is_dot  = (dde->name_len == 1 && dde->name[0] == '.');
@@ -897,7 +907,7 @@ ext2_read_kernel(struct vnode *vp, uint64 buf, int n, uint off)
       continue;
     }
 
-    struct buf *bp = bread(priv->mp->dev, blk);
+    struct buf *bp = bread(priv->mp->dev, EBLK(priv->mp, blk));
     if(bp == 0) return -1;
     memmove((void*)(buf + total), bp->data + boff, len);
     brelse(bp);
@@ -939,8 +949,8 @@ ext2_mount(uint dev)
   struct ext2_mount_priv *priv;
   struct buf *bp;
 
-  // Read superblock (block 1 at byte offset 1024)
-  bp = bread(dev, 1);
+  // Read superblock (block 1 at byte offset 1024, shifted past fs.img)
+  bp = bread(dev, 1 + FSSIZE);
   if(bp == 0) return 0;
 
   priv = (struct ext2_mount_priv*)kalloc();
@@ -959,11 +969,17 @@ ext2_mount(uint dev)
     return 0;  // only 1024-byte blocks supported
   }
 
-  priv->dev = dev;
-  initsleeplock(&priv->lock, "ext2_alloc");
+  //priv->dev = dev;
+  //priv->fs_offset = FSSIZE;  // ext2 data starts after xv6 fs.img
+  //initsleeplock(&priv->lock, "ext2_alloc");
 
-  // Read block group descriptor (block 2 when block_size=1024)
-  bp = bread(dev, 2);
+  priv->dev = dev;
+  priv->fs_offset = FSSIZE;  // ext2 data starts after xv6 fs.img
+  priv->inode_size = priv->sb.s_inode_size;
+  if(priv->inode_size == 0) priv->inode_size = 128;  // defaults to 128 per ext2 spec
+  initsleeplock(&priv->lock, "ext2_alloc");
+  // Read block group descriptor (block 2 when block_size=1024, shifted past fs.img)
+  bp = bread(dev, 2 + FSSIZE);
   if(bp == 0){ kfree((void*)priv); return 0; }
   memmove(&priv->bg, bp->data, sizeof(struct ext2_bgdesc));
   brelse(bp);

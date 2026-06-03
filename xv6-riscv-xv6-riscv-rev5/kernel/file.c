@@ -110,9 +110,18 @@ fileread(struct file *f, uint64 addr, int n)
     r = devsw[f->major].read(1, addr, n);
   } else if(f->type == FD_INODE){
     vn_lock(f->vnode);
-    r = vfs_read(f->vnode, addr, n, f->off);
-    if(r > 0)
-      f->off += r;
+    if(f->vnode->type == V_DIR){
+      // Delegate directory reads to readdir, which does copyout internally.
+      r = vfs_readdir(f->vnode, addr, f->off);
+      if(r > 0){
+        f->off = r;
+        r = sizeof(struct dirent);
+      }
+    } else {
+      r = vfs_read(f->vnode, addr, n, f->off);
+      if(r > 0)
+        f->off += r;
+    }
     vn_unlock(f->vnode);
   } else {
     panic("fileread");

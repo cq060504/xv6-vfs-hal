@@ -87,6 +87,12 @@ vfs_mount(char *path, uint dev, char *fstype)
   struct mount *mp = 0;
   struct vnode *mpoint = 0;
 
+  // Reject duplicate mount at the same path
+  for(i = 0; i < nmount; i++){
+    if(strncmp(mounttable[i]->path, path, 128) == 0)
+      return 0;
+  }
+
   for(i = 0; i < nfstype; i++){
     if(strncmp(fstypes[i].name, fstype, 16) == 0){
       mp = fstypes[i].mountfn(dev);
@@ -109,9 +115,11 @@ vfs_mount(char *path, uint dev, char *fstype)
       kfree((void*)mp);
       return 0;
     }
-    // Check nothing is already mounted here
+    // Check nothing is already mounted here (use dev+inum, not pointer comparison)
     for(i = 1; i < nmount; i++){
-      if(mounttable[i]->mountpoint == mpoint){
+      if(mounttable[i]->mountpoint &&
+         mounttable[i]->mountpoint->dev == mpoint->dev &&
+         mounttable[i]->mountpoint->inum == mpoint->inum){
         vput(mpoint);
         if(mp->ops && mp->ops->unmount)
           mp->ops->unmount(mp);
@@ -313,12 +321,21 @@ vfs_namei(char *path)
       vn_unlock(vp); vput(vp); return 0;
     }
 
-    // ".." from a mount root: cross back to parent filesystem
+    // ".." from a mount root: cross back to parent filesystem.
+    // Mountpoint's ".." is the parent directory in the parent FS.
     if(strncmp(name, "..", 15) == 0 && vp->mp && vp->mp->mountpoint &&
-       vp == vp->mp->root){
-      next = vget(vp->mp->mountpoint);
+       vp->dev == vp->mp->root->dev && vp->inum == vp->mp->root->inum){
+      struct vnode *mpoint = vget(vp->mp->mountpoint);
       vn_unlock(vp);
       vput(vp);
+      vn_lock(mpoint);
+      if(mpoint->ops && mpoint->ops->lookup)
+        mpoint->ops->lookup(mpoint, "..", &next);
+      else
+        next = 0;
+      vn_unlock(mpoint);
+      vput(mpoint);
+      if(next == 0) return 0;
       vp = next;
       continue;
     }
@@ -362,12 +379,21 @@ vfs_nameiparent(char *path, char *name)
       vn_unlock(vp); vput(vp); return 0;
     }
 
-    // ".." from a mount root: cross back to parent filesystem
+    // ".." from a mount root: cross back to parent filesystem.
+    // Mountpoint's ".." is the parent directory in the parent FS.
     if(strncmp(buf, "..", 15) == 0 && vp->mp && vp->mp->mountpoint &&
-       vp == vp->mp->root){
-      next = vget(vp->mp->mountpoint);
+       vp->dev == vp->mp->root->dev && vp->inum == vp->mp->root->inum){
+      struct vnode *mpoint = vget(vp->mp->mountpoint);
       vn_unlock(vp);
       vput(vp);
+      vn_lock(mpoint);
+      if(mpoint->ops && mpoint->ops->lookup)
+        mpoint->ops->lookup(mpoint, "..", &next);
+      else
+        next = 0;
+      vn_unlock(mpoint);
+      vput(mpoint);
+      if(next == 0) return 0;
       vp = next;
       continue;
     }

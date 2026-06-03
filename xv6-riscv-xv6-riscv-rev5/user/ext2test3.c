@@ -52,7 +52,7 @@ static int test_l1_mount_cycle(void) {
     umount("/mnt");
 
     // 首次 mount ext2
-    CHK(mount("/mnt", 2, "ext2") >= 0, "first mount failed");
+    CHK(mount("/mnt", 1, "ext2") >= 0, "first mount failed");
 
     // 创建文件验证 ext2 可用
     int fd = open("/mnt/t1_cycle", O_WRONLY | O_CREATE);
@@ -72,7 +72,7 @@ static int test_l1_mount_cycle(void) {
     CHK(umount("/mnt") >= 0, "umount failed");
 
     // 再次 mount
-    CHK(mount("/mnt", 2, "ext2") >= 0, "remount failed");
+    CHK(mount("/mnt", 1, "ext2") >= 0, "remount failed");
 
     // 文件应仍然存在 (ext2 持久化)
     fd = open("/mnt/t1_cycle", O_RDONLY);
@@ -94,8 +94,8 @@ static int test_l1_mount_cycle(void) {
 static int test_l1_mount_errors(void) {
   TEST("L1.2 mount error paths") {
     // mount 到已挂载的点应失败 (先 mount，再 mount 同一路径)
-    CHK(mount("/mnt", 2, "ext2") >= 0, "pre-mount for error test failed");
-    CHK(mount("/mnt", 2, "ext2") < 0, "double mount should fail");
+    CHK(mount("/mnt", 1, "ext2") >= 0, "pre-mount for error test failed");
+    CHK(mount("/mnt", 1, "ext2") < 0, "double mount should fail");
     umount("/mnt");
 
     // mount 到不存在的路径应失败
@@ -105,7 +105,7 @@ static int test_l1_mount_errors(void) {
     int fd = open("/mnt_bad", O_WRONLY | O_CREATE);
     CHKF(fd >= 0, "create /mnt_bad failed: fd=%d", fd);
     close(fd);
-    CHK(mount("/mnt_bad", 2, "ext2") < 0, "mount on a file should fail");
+    CHK(mount("/mnt_bad", 1, "ext2") < 0, "mount on a file should fail");
     unlink("/mnt_bad");
 
     // umount 非挂载点应失败
@@ -124,7 +124,7 @@ static int test_l1_mount_errors(void) {
 // 辅助：重新挂载 ext2 到 /mnt
 static void remount_ext2(void) {
   umount("/mnt");
-  mount("/mnt", 2, "ext2");
+  mount("/mnt", 1, "ext2");
 }
 
 // L2.1: create + lookup (多层嵌套目录 + 文件)
@@ -540,7 +540,7 @@ static int test_l4_unlink_while_open(void) {
 
     // 重新 mount 验证文件确实被删除
     umount("/mnt");
-    CHK(mount("/mnt", 2, "ext2") >= 0, "remount failed");
+    CHK(mount("/mnt", 1, "ext2") >= 0, "remount failed");
     fd = open("/mnt/l4uwo", O_RDONLY);
     CHKF(fd < 0, "file should not persist after unlink+remount, fd=%d", fd);
 

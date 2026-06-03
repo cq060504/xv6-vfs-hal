@@ -178,15 +178,18 @@ UPROGS=\
 	$U/_logstress\
 	$U/_forphan\
 	$U/_dorphan\
+	$U/_mount\
+	$U/_umount\
 
-fs.img: mkfs/mkfs README $(UPROGS)
+fs.img: mkfs/mkfs README $(UPROGS) ext2.img
 	mkfs/mkfs fs.img README $(UPROGS)
+	cat ext2.img >> fs.img
 
 -include kernel/*.d user/*.d hal/*/*.d
 
 ext2.img:
 	dd if=/dev/zero of=ext2.img bs=1M count=10
-	mkfs.ext2 -F ext2.img
+	mkfs.ext2 -F -b 1024 ext2.img
 
 clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
@@ -211,8 +214,6 @@ QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nogr
 QEMUOPTS += -global virtio-mmio.force-legacy=false
 QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
-QEMUOPTS += -drive file=ext2.img,if=none,format=raw,id=x1
-QEMUOPTS += -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1
 
 qemu: check-qemu-version $K/kernel fs.img
 	$(QEMU) $(QEMUOPTS)
