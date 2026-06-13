@@ -51,6 +51,9 @@ kvmmake(void)
 #else
   // virtio mmio disk interface (RISC-V only)
   kvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+#if defined(VIRTIO1) && VIRTIO_NDISK > 1
+  kvmmap(kpgtbl, VIRTIO1, VIRTIO1, PGSIZE, PTE_R | PTE_W);
+#endif
 
   // map kernel text executable and read-only.
   kvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
@@ -183,7 +186,7 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
   if(va >= MAXVA)
     panic("walk");
 
-  for(int level = 3; level > 0; level--) {
+  for(int level = PT_LEVELS - 1; level > 0; level--) {
     pte_t *pte = &pagetable[PX(level, va)];
     if(*pte & PTE_V) {
       pagetable = (pagetable_t)PTE2PA(*pte);
@@ -550,6 +553,7 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 static void
 tlb_fill_from_pte(uint64 va_page, pte_t pte_val)
 {
+#ifdef ARCH_loongarch
   // Clear P(b7) and W(b8) — reserved in TLBELO
   uint64 hi, lo;
   lo = pte_val;
@@ -564,6 +568,10 @@ tlb_fill_from_pte(uint64 va_page, pte_t pte_val)
   // TLBIDX.NE=0 → tlbfill writes a valid entry
   asm volatile("csrwr %0, 0x10" : : "r"(0x0C000000));   // PS=12,NE=0
   asm volatile("tlbfill");
+#else
+  (void)va_page;
+  (void)pte_val;
+#endif
 }
 
 // allocate and map user memory if process is referencing a page
@@ -608,7 +616,7 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
     kfree((void *)mem);
     return 0;
   }
-  tlb_fill_from_pte(va, PA2PTE(mem) | PTE_W | PTE_U | PTE_R | PTE_V);
+  tlb_fill_from_pte(va, PA2PTE(mem) | PTE_W | PTE_U | PTE_R | PTE_V_CACHE);
   return mem;
 }
 

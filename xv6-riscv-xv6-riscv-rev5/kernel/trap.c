@@ -203,7 +203,11 @@ devintr()
 
     if(irq == UART0_IRQ){
       hal_console_intr(consoleintr);
-    } else if(irq == VIRTIO0_IRQ){
+    } else if(irq == VIRTIO0_IRQ
+#if defined(VIRTIO1_IRQ) && VIRTIO_NDISK > 1
+              || irq == VIRTIO1_IRQ
+#endif
+    ){
       virtio_disk_intr();
     } else if(irq){
       printf("unexpected interrupt irq=%d\n", irq);

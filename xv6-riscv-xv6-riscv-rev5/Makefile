@@ -4,6 +4,7 @@ U=user
 # 目标架构,默认 riscv,可选 loongarch
 ARCH ?= riscv
 HAL = hal
+VIRTIO_NDISK ?= 1
 
 # 通用内核对象(平台无关)
 K_OBJS = \
@@ -127,6 +128,7 @@ CFLAGS += -I$K
 CFLAGS += -I$(HAL)
 CFLAGS += -I$(HAL)/$(ARCH)
 CFLAGS += -DARCH_$(ARCH)
+CFLAGS += -DVIRTIO_NDISK=$(VIRTIO_NDISK)
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
 
 # Disable PIE when possible (for Ubuntu 16.10 toolchain)
@@ -139,8 +141,10 @@ endif
 
 LDFLAGS = -z max-page-size=4096
 
-$K/kernel: $(OBJS) $(HAL)/$(ARCH)/kernel.ld $(if $(filter loongarch,$(ARCH)),$K/fs_img.o)
-	$(LD) $(LDFLAGS) -T $(HAL)/$(ARCH)/kernel.ld -o $K/kernel $(OBJS) $(if $(filter loongarch,$(ARCH)),$K/fs_img.o)
+LOONGARCH_FS_OBJS = $(if $(filter loongarch,$(ARCH)),$K/fs_img.o $(if $(filter 2,$(VIRTIO_NDISK)),$K/fs1_img.o))
+
+$K/kernel: $(OBJS) $(HAL)/$(ARCH)/kernel.ld $(LOONGARCH_FS_OBJS)
+	$(LD) $(LDFLAGS) -T $(HAL)/$(ARCH)/kernel.ld -o $K/kernel $(OBJS) $(LOONGARCH_FS_OBJS)
 	$(OBJDUMP) -S $K/kernel > $K/kernel.asm
 	$(OBJDUMP) -t $K/kernel | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $K/kernel.sym
 
@@ -148,6 +152,9 @@ $K/kernel: $(OBJS) $(HAL)/$(ARCH)/kernel.ld $(if $(filter loongarch,$(ARCH)),$K/
 # This creates symbols _binary_fs_img_start, _binary_fs_img_end, _binary_fs_img_size.
 ifeq ($(ARCH),loongarch)
 $K/fs_img.o: fs.img
+	$(OBJCOPY) -I binary -O elf64-loongarch -B loongarch64 $< $@
+
+$K/fs1_img.o: fs1.img
 	$(OBJCOPY) -I binary -O elf64-loongarch -B loongarch64 $< $@
 endif
 
@@ -235,13 +242,16 @@ UPROGS=\
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
 
+fs1.img: fs.img
+	cp fs.img fs1.img
+
 -include kernel/*.d user/*.d hal/*/*.d
 
 clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*/*.o */*.d */*.asm */*.sym \
 	hal/*/*.o hal/*/*.d hal/*/*.asm hal/*/*.sym \
-	$K/kernel fs.img \
+	$K/kernel fs.img fs1.img \
 	mkfs/mkfs .gdbinit \
         $U/usys.S \
 	$(UPROGS)
@@ -265,9 +275,13 @@ QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nogr
 QEMUOPTS += -global virtio-mmio.force-legacy=false
 QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
+ifeq ($(VIRTIO_NDISK),2)
+QEMUOPTS += -drive file=fs1.img,if=none,format=raw,id=x1
+QEMUOPTS += -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1
+endif
 endif
 
-qemu: check-qemu-version $K/kernel
+qemu: check-qemu-version $K/kernel $(if $(filter riscv,$(ARCH)),fs.img $(if $(filter 2,$(VIRTIO_NDISK)),fs1.img))
 ifeq ($(ARCH),loongarch)
 	$(OBJCOPY) -O binary $K/kernel $K/kernel.bin
 	$(QEMU) $(QEMUOPTS) -bios $K/kernel.bin
@@ -275,13 +289,10 @@ else
 	$(QEMU) $(QEMUOPTS)
 endif
 
-fs.img: mkfs/mkfs README $(UPROGS)
-	mkfs/mkfs fs.img README $(UPROGS)
-
 .gdbinit: .gdbinit.tmpl-riscv
 	sed "s/:1234/:$(GDBPORT)/" < $^ > $@
 
-qemu-gdb: $K/kernel .gdbinit fs.img
+qemu-gdb: $K/kernel .gdbinit $(if $(filter riscv,$(ARCH)),fs.img $(if $(filter 2,$(VIRTIO_NDISK)),fs1.img))
 	@echo "*** Now run 'gdb' in another window." 1>&2
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
 

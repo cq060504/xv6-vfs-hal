@@ -68,4 +68,10 @@ timerinit()
 }
 
 // ---- HAL unified interface wrapper ----
-void hal_timer_init(void) { timerinit(); }
+// timerinit() touches M-mode CSRs and is called from start() before mret.
+// main() runs in S-mode, so the HAL wrapper may only program stimecmp.
+void
+hal_timer_init(void)
+{
+  w_stimecmp(r_time() + 1000000);
+}

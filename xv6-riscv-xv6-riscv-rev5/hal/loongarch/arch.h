@@ -360,6 +360,7 @@ typedef uint64 *pagetable_t;
 #define PGROUNDDOWN(a) (((a)) & ~(PGSIZE-1))
 
 // 4-level page table: 9-9-9-9-12 addressing.
+#define PT_LEVELS       4
 #define PXMASK          0x1FF
 #define PXSHIFT(level)  (PGSHIFT+(9*(level)))
 #define PX(level, va)   ((((uint64)(va)) >> PXSHIFT(level)) & PXMASK)
