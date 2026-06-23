@@ -1,0 +1,35 @@
+============================================================
+AI 交互记录 - xv6-riscv HAL + VFS 项目
+开始时间: 2026-06-23
+项目背景: 同时支持 xv6/ext2/fat32 文件系统及 RISC-V/LoongArch 平台
+         用户负责 HAL（硬件抽象层），同事负责 VFS（虚拟文件系统）
+============================================================
+
+--- Session 1: 2026-06-23 ---
+任务: 将 VFS 分支合并到 HAL 分支，在 RISC-V 上测试
+
+操作步骤:
+1. 阅读 VFS 分支代码 (kernel/vfs.c, vfs.h, ext2.c, ext2.h, xv6fs.c, main.c, init.c 等)
+2. 切换到 HAL 分支，执行 git merge vfs
+3. 解决 15 个冲突文件:
+   - 简单冲突 (10个): hal_arch.h, hal_intr.h, hal_ctx.h, arch.h, memlayout.h,
+     hal_plic.c, hal_start.c, hal_uart.c, hal_swtch.S, settings.local.json
+     → 全部采用 HEAD (HAL) 版本
+   - 复杂冲突 (5个): vm.c, trap.c, main.c, Makefile, hal_virtio.c
+     → 手动合并，保留 HAL 架构支持 + VFS 多磁盘/ext2 支持
+4. 提交合并 (commit 5186e94)
+5. Docker 编译测试: 内核 + 用户程序 + fs.img + ext2.img 全部构建成功
+6. QEMU 启动测试: 系统正常启动，usertests 通过测试项包括:
+   - copyin/copyout/copyinstr1/2/3, rwsbrk
+   - truncate1/2/3, openiput/exitiput/iput
+   - opentest/writetest/writebig, createtest/dirtest
+   - exectest, pipe1, killstatus, preempt, exitwait
+   测试在 "reparent" 时因 30s 超时被终止（非测试失败）
+
+关键技术决策:
+- hal_ctx.h: 保留双架构支持 (#ifdef ARCH_loongarch) + 单指针 hal_switch
+- hal_virtio.c: 保留 HEAD 的多磁盘支持 (VIRTIO_NDISK)
+- main.c: 保留 hal_irq_init/hal_irq_hart_init + hal_timer_init
+- vm.c: 保留 ARCH_loongarch 条件编译结构
+- Makefile: 合并 VIRTIO_NDISK + vfs/xv6fs/ext2 对象 + LoongArch 工具链
+

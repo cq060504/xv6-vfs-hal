@@ -253,7 +253,11 @@ fs1.img: fs.img
 	cp fs.img fs1.img
 
 ext2.img:
+ifeq ($(ARCH),loongarch)
+	dd if=/dev/zero of=ext2.img bs=1M count=1
+else
 	dd if=/dev/zero of=ext2.img bs=1M count=10
+endif
 	mkfs.ext2 -F -b 1024 ext2.img
 
 clean:

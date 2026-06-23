@@ -35,7 +35,7 @@ extern char _binary_fs1_img_end[];
 #endif
 
 #define NRAMDISK VIRTIO_NDISK
-#define RAMDISK_MAX_PAGES 512
+#define RAMDISK_MAX_PAGES 2048
 
 struct ramdisk {
   uchar *pages[RAMDISK_MAX_PAGES];
