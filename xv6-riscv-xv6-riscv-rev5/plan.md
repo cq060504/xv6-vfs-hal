@@ -654,3 +654,34 @@ python3 test-xv6.py -q usertests
 3. 增加针对 `MAXVA`、`1<<40`、`1<<48` 和低页别名访问的独立回归测试。
 
 详细调试记录见 `others/loongarch-usertests-maxva-fix.md`。
+
+验证usertests
+RISC-V Docker：
+  sudo docker exec -it xv6 bash
+  cd /xv6/xv6-riscv-xv6-riscv-rev5
+  make clean
+  make qemu
+  看到下面这行说明通过：
+  ALL TESTS PASSED
+  退出 QEMU：
+  Ctrl-a 然后按 x
+  如果要验证双磁盘配置：
+  make clean
+  make VIRTIO_NDISK=2 qemu
+  LoongArch Docker
+  xv6-la
+  cd /xv6
+  如果 /xv6 不是源码目录，就用：
+  cd /xv6/xv6-riscv-xv6-riscv-rev5
+  然后执行：
+  make ARCH=loongarch clean
+  make ARCH=loongarch qemu
+  同样看到：
+
+  ALL TESTS PASSED
+
+make ARCH=loongarch VIRTIO_NDISK=2 双盘编译通过。
+  就说明通过。退出 QEMU 也是：
+  Ctrl-a 然后按 x
+注意：RISC-V 和 LoongArch 共用同一个源码目录时，不要两个容器同时 make qemu。两个架构切换测试前都先 make clean，否则可能遇到旧 .d 依赖或旧对象文件干扰。测试中出现一些 usertrap(): unexpected scause ... 后面跟着 OK 是 usertests 的预期负面测试，不算失败。
+

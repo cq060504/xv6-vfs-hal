@@ -1,12 +1,12 @@
 K=kernel
 U=user
 
-# 目标架构,默认 riscv,可选 loongarch
+# Target architecture, default riscv, optional loongarch
 ARCH ?= riscv
 HAL = hal
 VIRTIO_NDISK ?= 1
 
-# 通用内核对象(平台无关)
+# Platform-independent kernel objects
 K_OBJS = \
   $K/console.o \
   $K/printf.o \
@@ -28,11 +28,11 @@ K_OBJS = \
   $K/exec.o \
   $K/sysfile.o
 
-# 平台相关对象(已移至 HAL 目录，不再从 kernel/ 编译)
-# HAL_OBJS 已由 ARCH_OBJS 替代
+# Platform objects (moved to HAL, no longer compiled from kernel/)
+# HAL_OBJS replaced by ARCH_OBJS
 
-# HAL 平台实现对象(从 hal/$(ARCH)/ 编译)
-# RISC-V 默认
+# HAL platform implementation objects (compiled from hal/$(ARCH)/)
+# RISC-V defaults
 ARCH_OBJS = \
   $(HAL)/$(ARCH)/hal_entry.o \
   $(HAL)/$(ARCH)/hal_start.o \
@@ -43,7 +43,7 @@ ARCH_OBJS = \
   $(HAL)/$(ARCH)/hal_uart.o \
   $(HAL)/$(ARCH)/hal_virtio.o
 
-# LoongArch 覆盖: 使用 hal_intr 代替 hal_plic, 增加 TLB refill
+# LoongArch overrides: hal_intr replaces hal_plic, add TLB refill handler
 ifeq ($(ARCH),loongarch)
 ARCH_OBJS = \
   $(HAL)/$(ARCH)/hal_entry.o \
@@ -60,7 +60,7 @@ endif
 OBJS = $(K_OBJS) $(ARCH_OBJS)
 
 # ============================================================
-# LoongArch 工具链和 QEMU (必须在 RISC-V 检测之前设置)
+# LoongArch toolchain and QEMU (must be set before RISC-V auto-detection)
 # ============================================================
 ifeq ($(ARCH),loongarch)
 TOOLPREFIX = loongarch64-linux-gnu-
@@ -158,19 +158,19 @@ $K/fs1_img.o: fs1.img
 	$(OBJCOPY) -I binary -O elf64-loongarch -B loongarch64 $< $@
 endif
 
-# 通用规则:编译 kernel/ 下的 .c -> .o
+# Generic rule: compile kernel/ .c -> .o
 $K/%.o: $K/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# 通用规则:编译 kernel/ 下的 .S -> .o
+# Generic rule: compile kernel/ .S -> .o
 $K/%.o: $K/%.S
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# HAL 平台对象:编译 hal/$(ARCH)/ 下的 .c -> .o
+# HAL platform objects: compile hal/$(ARCH)/ .c -> .o
 $(HAL)/$(ARCH)/%.o: $(HAL)/$(ARCH)/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# HAL 平台对象:编译 hal/$(ARCH)/ 下的 .S -> .o
+# HAL platform objects: compile hal/$(ARCH)/ .S -> .o
 $(HAL)/$(ARCH)/%.o: $(HAL)/$(ARCH)/%.S
 	$(CC) $(CFLAGS) -c -o $@ $<
 

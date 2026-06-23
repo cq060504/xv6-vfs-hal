@@ -1,4 +1,4 @@
-// Interrupt controller abstraction interface.
+// Interrupt controller abstraction interface for out device .different from cpu interrupts, which are in hal_cpu.h
 
 #ifndef _HAL_INTR_H_
 #define _HAL_INTR_H_

@@ -163,6 +163,10 @@ kvminithart()
   crmd &= ~CRMD_DA;     // disable direct address translation
   crmd |= CRMD_PG;      // enable page table walk
   w_crmd(crmd);
+
+  // ldpte on QEMU la464 clears P(b7)/W(b8) when writing TLBRELO,
+  // so no manual bit-clearing is needed in the TLB refill handler.
+  // Verified by removing the bstrins.d clearing and passing usertests.
 #endif
 }
 

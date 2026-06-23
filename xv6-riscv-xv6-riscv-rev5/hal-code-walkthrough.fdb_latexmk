@@ -1,0 +1,14 @@
+# Fdb version 4
+["xdvipdfmx"] 0 "hal-code-walkthrough.xdv" "hal-code-walkthrough.pdf" "hal-code-walkthrough" 1781336957.20234 -1
+  "hal-code-walkthrough.xdv" 0 -1 0 "xelatex"
+  (generated)
+  "hal-code-walkthrough.pdf"
+  (rewritten before read)
+["xelatex"] 1781336957.19754 "hal-code-walkthrough.tex" "hal-code-walkthrough.xdv" "hal-code-walkthrough" 1781336957.20225 2
+  "hal-code-walkthrough.aux" 1781336949.19626 32 3985256e7290058c681f74d7a3565a19 "xelatex"
+  "hal-code-walkthrough.tex" 1781336955.18631 70664 35442c43a18196f91cd769204de8151a ""
+  (generated)
+  "hal-code-walkthrough.aux"
+  "hal-code-walkthrough.log"
+  "hal-code-walkthrough.xdv"
+  (rewritten before read)

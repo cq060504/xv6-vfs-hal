@@ -57,12 +57,6 @@ tlb_refill_entry:
 
         ldpte   $t0, 0                 # even page -> TLBRELO0
         ldpte   $t0, 1                 # odd page  -> TLBRELO1
-        csrrd   $t0, 0x8c              # clear memory-PTE P/W bits
-        bstrins.d $t0, $r0, 8, 7       # TLBRELO bits [8:7] are reserved
-        csrwr   $t0, 0x8c
-        csrrd   $t0, 0x8d
-        bstrins.d $t0, $r0, 8, 7
-        csrwr   $t0, 0x8d
         tlbfill
 
         csrrd   $t0, 0x8b

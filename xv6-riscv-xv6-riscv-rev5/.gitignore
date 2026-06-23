@@ -17,3 +17,11 @@ user/usys.S
 .gdbinit
 TAGS
 others/
+.agents/
+.codex/
+loongarch-investigation/
+riscv-hal-reservese/
+xv6-loongarch-exp-main/
+xv6-riscv-xv6-riscv-rev5/.claude/
+xv6-riscv-xv6-riscv-rev5/.openclaude/
+xv6-riscv-xv6-riscv-rev5/others/
