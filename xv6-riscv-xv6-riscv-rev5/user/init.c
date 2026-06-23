@@ -39,30 +39,10 @@ main(void)
     close(fd);
   }
 
-  // Run ext2 tests — order matters: ext2test2 creates files in /mnt,
-  // ext2test1 uses them. ext2test3 has a known L4 issue, skip it.
-  printf("init: running ext2test2\n");
-  pid = fork();
-  if(pid == 0){
-    char *ext2argv[] = { "ext2test2", 0 };
-    exec("ext2test2", ext2argv);
-    printf("init: exec ext2test2 failed\n");
-    exit(1);
-  }
-  wait((int *) 0);
-
-  printf("init: running ext2test1\n");
-  pid = fork();
-  if(pid == 0){
-    char *ext2argv[] = { "ext2test1", 0 };
-    exec("ext2test1", ext2argv);
-    printf("init: exec ext2test1 failed\n");
-    exit(1);
-  }
-  wait((int *) 0);
-
-  printf("init: ext2 tests done, starting sh\n");
-
+  // Start a shell.  Manually run commands to test:
+  //   usertests -q           — xv6 usertests
+  //   ext2test2; ext2test1   — ext2 tests (order matters)
+  //   ext2test3              — ext2 L4 test (may fail)
   for(;;){
     printf("init: starting sh\n");
     pid = fork();

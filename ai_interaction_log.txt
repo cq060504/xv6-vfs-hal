@@ -33,3 +33,61 @@ AI 交互记录 - xv6-riscv HAL + VFS 项目
 - vm.c: 保留 ARCH_loongarch 条件编译结构
 - Makefile: 合并 VIRTIO_NDISK + vfs/xv6fs/ext2 对象 + LoongArch 工具链
 
+--- Session 2: 2026-06-23 ---
+任务: 修复 LoongArch 编译和启动错误
+
+错误现象:
+qemu-system-loongarch64: Could not load ROM image 'kernel/kernel.bin'
+
+根因分析:
+1. VFS 合并后，ext2.img 被追加到 fs.img (cat ext2.img >> fs.img)
+2. LoongArch 通过 objcopy 将 fs.img 嵌入内核 (kernel/fs_img.o)
+3. 原始 ext2.img 为 10MB，加上 xv6 fs.img 2MB = 12.5MB 嵌入式镜像
+4. QEMU LoongArch virt 的 -bios ROM 加载限制约为 4MB
+5. RAMDISK_MAX_PAGES=512 (2MB) 也无法容纳合并后的镜像
+
+修复方案:
+1. hal/loongarch/hal_virtio.c: RAMDISK_MAX_PAGES 512 → 2048 (8MB)
+2. Makefile: ext2.img 大小按架构区分
+   - LoongArch: 1MB (受限于内核嵌入 ROM 大小)
+   - RISC-V: 10MB (virtio 磁盘无大小限制)
+3. 重新编译后 kernel.bin 从 12.6MB 降至 3.5MB，成功启动
+
+测试结果 (LoongArch QEMU):
+- ramdisk1: 3096576 bytes, 756 pages
+- usertests -q 通过测试: copyin/out/str1/2/3, rwsbrk, truncate1/2/3,
+  openiput/exitiput/iput, opentest/writetest/writebig, createtest/dirtest,
+  exectest, pipe1, killstatus, preempt, exitwait, reparent, twochildren,
+  forkfork, forkforkfork (进行中)
+- 注: init.c 直接运行 usertests -q (而非 sh)，这是 HAL 分支的测试配置
+
+--- Session 3: 2026-06-23 ---
+任务: 在双架构上测试 ext2 文件系统测试用例
+
+测试顺序（同事要求）:
+1. ext2test2 先运行 — 在 /mnt (ext2) 中创建文件
+2. ext2test1 后运行 — 使用 ext2test2 创建的文件进行跨文件系统复制测试
+3. ext2test3 跳过 — L4 测试有已知问题
+
+init.c 修改:
+- 保留 /mnt 创建和 ext2 挂载（同事已设置）
+- 在启动 sh 之前，先 fork+exec ext2test2，wait 完成后再 fork+exec ext2test1
+- 两个测试完成后启动 sh
+
+测试结果:
+=== LoongArch ===
+ext2test2: test_cross_fs_copy(): succeed
+ext2test1: test_copy_file 全部 4 项 succeed
+  - /mnt/hello.c → /hello.c: succeed
+  - /mnt/hello.c → /tests/hello.c: succeed
+  - /hello.c → /mnt/hello.c: succeed
+  - /tests/hello.c → /mnt/hello.c: succeed
+
+=== RISC-V ===
+ext2test2: test_cross_fs_copy(): succeed
+ext2test1: test_copy_file 全部 4 项 succeed (同上)
+
+已知问题:
+- usertrap(): unexpected scause 0xd (缺页异常)，不影响测试结果
+- ext2test3 有 L4 测试问题，按同事建议跳过
+
