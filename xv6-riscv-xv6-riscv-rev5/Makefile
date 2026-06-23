@@ -26,13 +26,12 @@ K_OBJS = \
   $K/file.o \
   $K/pipe.o \
   $K/exec.o \
-  $K/sysfile.o
+  $K/sysfile.o \
+  $K/vfs.o \
+  $K/xv6fs.o \
+  $K/ext2.o
 
-# Platform objects (moved to HAL, no longer compiled from kernel/)
-# HAL_OBJS replaced by ARCH_OBJS
-
-# HAL platform implementation objects (compiled from hal/$(ARCH)/)
-# RISC-V defaults
+# Platform-specific objects (compiled from hal/$(ARCH)/)
 ARCH_OBJS = \
   $(HAL)/$(ARCH)/hal_entry.o \
   $(HAL)/$(ARCH)/hal_start.o \
@@ -158,11 +157,11 @@ $K/fs1_img.o: fs1.img
 	$(OBJCOPY) -I binary -O elf64-loongarch -B loongarch64 $< $@
 endif
 
-# Generic rule: compile kernel/ .c -> .o
+# Generic rules: compile kernel/ .c -> .o
 $K/%.o: $K/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# Generic rule: compile kernel/ .S -> .o
+# Generic rules: compile kernel/ .S -> .o
 $K/%.o: $K/%.S
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -221,6 +220,9 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 UPROGS=\
 	$U/_cat\
 	$U/_echo\
+	$U/_ext2test1\
+	$U/_ext2test2\
+	$U/_ext2test3\
 	$U/_forktest\
 	$U/_grep\
 	$U/_init\
@@ -238,20 +240,27 @@ UPROGS=\
 	$U/_logstress\
 	$U/_forphan\
 	$U/_dorphan\
+	$U/_mount\
+	$U/_umount\
 
-fs.img: mkfs/mkfs README $(UPROGS)
+fs.img: mkfs/mkfs README $(UPROGS) ext2.img
 	mkfs/mkfs fs.img README $(UPROGS)
+	cat ext2.img >> fs.img
+
+-include kernel/*.d user/*.d hal/*/*.d
 
 fs1.img: fs.img
 	cp fs.img fs1.img
 
--include kernel/*.d user/*.d hal/*/*.d
+ext2.img:
+	dd if=/dev/zero of=ext2.img bs=1M count=10
+	mkfs.ext2 -F -b 1024 ext2.img
 
 clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*/*.o */*.d */*.asm */*.sym \
 	hal/*/*.o hal/*/*.d hal/*/*.asm hal/*/*.sym \
-	$K/kernel fs.img fs1.img \
+	$K/kernel fs.img fs1.img ext2.img \
 	mkfs/mkfs .gdbinit \
         $U/usys.S \
 	$(UPROGS)

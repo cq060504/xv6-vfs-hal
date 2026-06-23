@@ -5,8 +5,10 @@
 #include "proc.h"
 #include "defs.h"
 #include "elf.h"
+#include "vfs.h"
+#include "file.h"
 
-static int loadseg(pde_t *, uint64, struct inode *, uint, uint);
+static int loadseg(pagetable_t, uint64, struct vnode *, uint, uint);
 
 // map ELF permissions to PTE permission bits.
 int flags2perm(int flags)
@@ -29,22 +31,17 @@ kexec(char *path, char **argv)
   int i, off;
   uint64 argc, sz = 0, sp, ustack[MAXARG], stackbase;
   struct elfhdr elf;
-  struct inode *ip;
+  struct vnode *vp;
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
   struct proc *p = myproc();
 
-  begin_op();
-
-  // Open the executable file.
-  if((ip = namei(path)) == 0){
-    end_op();
+  // Open the executable file via VFS
+  if((vp = vfs_namei(path)) == 0)
     return -1;
-  }
-  ilock(ip);
 
-  // Read the ELF header.
-  if(readi(ip, 0, (uint64)&elf, 0, sizeof(elf)) != sizeof(elf))
+  // Read the ELF header using vfs_read_kernel (kernel dst address).
+  if(vfs_read_kernel(vp, (uint64)&elf, sizeof(elf), 0) != sizeof(elf))
     goto bad;
 
   // Is this really an ELF file?
@@ -72,7 +69,7 @@ kexec(char *path, char **argv)
 
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
-    if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
+    if(vfs_read_kernel(vp, (uint64)&ph, sizeof(ph), off) != sizeof(ph))
       goto bad;
     if(ph.type != ELF_PROG_LOAD)
       continue;
@@ -88,12 +85,12 @@ kexec(char *path, char **argv)
     if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz, flags2perm(ph.flags))) == 0)
       goto bad;
     sz = sz1;
-    if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
+    if(loadseg(pagetable, ph.vaddr, vp, ph.off, ph.filesz) < 0)
       goto bad;
   }
-  iunlockput(ip);
-  end_op();
-  ip = 0;
+
+  vput(vp);
+  vp = 0;
 
   p = myproc();
   uint64 oldsz = p->sz;
@@ -157,10 +154,8 @@ kexec(char *path, char **argv)
  bad:
   if(pagetable)
     proc_freepagetable(pagetable, sz);
-  if(ip){
-    iunlockput(ip);
-    end_op();
-  }
+  if(vp)
+    vput(vp);
   return -1;
 }
 
@@ -169,20 +164,19 @@ kexec(char *path, char **argv)
 // and the pages from va to va+sz must already be mapped.
 // Returns 0 on success, -1 on failure.
 static int
-loadseg(pagetable_t pagetable, uint64 va, struct inode *ip, uint offset, uint sz)
+loadseg(pagetable_t pagetable, uint64 va, struct vnode *vp, uint offset, uint sz)
 {
   uint i, n;
-  uint64 pa;
 
   for(i = 0; i < sz; i += PGSIZE){
-    pa = walkaddr(pagetable, va + i);
+    uint64 pa = walkaddr(pagetable, va + i);
     if(pa == 0)
       panic("loadseg: address should exist");
     if(sz - i < PGSIZE)
       n = sz - i;
     else
       n = PGSIZE;
-    if(readi(ip, 0, (uint64)pa, offset+i, n) != n)
+    if(vfs_read_kernel(vp, pa, n, offset+i) != n)
       return -1;
   }
   

@@ -19,6 +19,8 @@ parser.add_argument('testrex', help="test name or regular expression")
 parser.add_argument("-q", action='store_true', help="usertests quick")
 args = parser.parse_args()
 
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 class QEMU(object):
 
     def __init__(self, reset=False):

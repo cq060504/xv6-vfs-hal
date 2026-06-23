@@ -4,6 +4,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "vfs.h"
 
 struct cpu cpus[NCPU];
 
@@ -25,9 +26,10 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
-// Allocate a page for each process's kernel stack.
-// Map it high in memory, followed by an invalid
-// guard page.
+// Allocate two pages for each process's kernel stack.
+// Map them high in memory, preceded by an invalid
+// guard page. Using 2 pages to support deeper call
+// chains from VFS layer.
 void
 proc_mapstacks(pagetable_t kpgtbl)
 {
@@ -37,8 +39,13 @@ proc_mapstacks(pagetable_t kpgtbl)
     char *pa = kalloc();
     if(pa == 0)
       panic("kalloc");
+    char *pa2 = kalloc();
+    if(pa2 == 0)
+      panic("kalloc");
     uint64 va = KSTACK((int) (p - proc));
+    // Map two physical pages for kernel stack
     kvmmap(kpgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+    kvmmap(kpgtbl, va + PGSIZE, (uint64)pa2, PGSIZE, PTE_R | PTE_W);
   }
 }
 
@@ -143,7 +150,7 @@ found:
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
-  p->context.sp = p->kstack + PGSIZE;
+  p->context.sp = p->kstack + 2*PGSIZE;
 
   return p;
 }
@@ -230,7 +237,8 @@ userinit(void)
   p = allocproc();
   initproc = p;
   
-  p->cwd = namei("/");
+  // cwd will be set in forkret() after vfs_mount()
+  p->cwd = 0;
 
   p->state = RUNNABLE;
 
@@ -292,7 +300,7 @@ kfork(void)
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
-  np->cwd = idup(p->cwd);
+  np->cwd = vget(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
@@ -346,9 +354,7 @@ kexit(int status)
     }
   }
 
-  begin_op();
-  iput(p->cwd);
-  end_op();
+  vput(p->cwd);
   p->cwd = 0;
 
   acquire(&wait_lock);
@@ -524,6 +530,8 @@ forkret(void)
     // regular process (e.g., because it calls sleep), and thus cannot
     // be run from main().
     fsinit(ROOTDEV);
+    vfs_mount("/", ROOTDEV, "xv6fs");
+    p->cwd = vfs_root();
 
     first = 0;
     // ensure other cores see first=0.

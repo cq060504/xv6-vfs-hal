@@ -12,6 +12,7 @@
 #include "file.h"
 #include "stat.h"
 #include "proc.h"
+#include "vfs.h"
 
 struct devsw devsw[NDEV];
 struct {
@@ -76,9 +77,7 @@ fileclose(struct file *f)
   if(ff.type == FD_PIPE){
     pipeclose(ff.pipe, ff.writable);
   } else if(ff.type == FD_INODE || ff.type == FD_DEVICE){
-    begin_op();
-    iput(ff.ip);
-    end_op();
+    vput(ff.vnode);
   }
 }
 
@@ -87,16 +86,8 @@ fileclose(struct file *f)
 int
 filestat(struct file *f, uint64 addr)
 {
-  struct proc *p = myproc();
-  struct stat st;
-  
   if(f->type == FD_INODE || f->type == FD_DEVICE){
-    ilock(f->ip);
-    stati(f->ip, &st);
-    iunlock(f->ip);
-    if(copyout(p->pagetable, addr, (char *)&st, sizeof(st)) < 0)
-      return -1;
-    return 0;
+    return vfs_stat(f->vnode, addr);
   }
   return -1;
 }
@@ -118,10 +109,20 @@ fileread(struct file *f, uint64 addr, int n)
       return -1;
     r = devsw[f->major].read(1, addr, n);
   } else if(f->type == FD_INODE){
-    ilock(f->ip);
-    if((r = readi(f->ip, 1, addr, f->off, n)) > 0)
-      f->off += r;
-    iunlock(f->ip);
+    vn_lock(f->vnode);
+    if(f->vnode->type == V_DIR){
+      // Delegate directory reads to readdir, which does copyout internally.
+      r = vfs_readdir(f->vnode, addr, f->off);
+      if(r > 0){
+        f->off = r;
+        r = sizeof(struct dirent);
+      }
+    } else {
+      r = vfs_read(f->vnode, addr, n, f->off);
+      if(r > 0)
+        f->off += r;
+    }
+    vn_unlock(f->vnode);
   } else {
     panic("fileread");
   }
@@ -134,7 +135,7 @@ fileread(struct file *f, uint64 addr, int n)
 int
 filewrite(struct file *f, uint64 addr, int n)
 {
-  int r, ret = 0;
+  int ret = 0;
 
   if(f->writable == 0)
     return -1;
@@ -146,35 +147,17 @@ filewrite(struct file *f, uint64 addr, int n)
       return -1;
     ret = devsw[f->major].write(1, addr, n);
   } else if(f->type == FD_INODE){
-    // write a few blocks at a time to avoid exceeding
-    // the maximum log transaction size, including
-    // i-node, indirect block, allocation blocks,
-    // and 2 blocks of slop for non-aligned writes.
-    int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
-    int i = 0;
-    while(i < n){
-      int n1 = n - i;
-      if(n1 > max)
-        n1 = max;
-
-      begin_op();
-      ilock(f->ip);
-      if ((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0)
-        f->off += r;
-      iunlock(f->ip);
-      end_op();
-
-      if(r != n1){
-        // error from writei
-        break;
-      }
-      i += r;
-    }
-    ret = (i == n ? n : -1);
+    vn_lock(f->vnode);
+    // L4.1: O_APPEND: seek to current file size before each write
+    if(f->appendable)
+      f->off = f->vnode->size;
+    ret = vfs_write(f->vnode, addr, n, f->off);
+    if(ret > 0)
+      f->off += ret;
+    vn_unlock(f->vnode);
   } else {
     panic("filewrite");
   }
 
   return ret;
 }
-
