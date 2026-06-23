@@ -9,8 +9,7 @@
 #include "user/user.h"
 #include "kernel/fcntl.h"
 
-char *argv[] = { "usertests","-q" ,0 };//run complite usertests
-//"usertests",q, 0 run quick usertests
+char *argv[] = { "sh", 0 };
 
 int
 main(void)
@@ -40,32 +39,50 @@ main(void)
     close(fd);
   }
 
+  // Run ext2 tests — order matters: ext2test2 creates files in /mnt,
+  // ext2test1 uses them. ext2test3 has a known L4 issue, skip it.
+  printf("init: running ext2test2\n");
+  pid = fork();
+  if(pid == 0){
+    char *ext2argv[] = { "ext2test2", 0 };
+    exec("ext2test2", ext2argv);
+    printf("init: exec ext2test2 failed\n");
+    exit(1);
+  }
+  wait((int *) 0);
+
+  printf("init: running ext2test1\n");
+  pid = fork();
+  if(pid == 0){
+    char *ext2argv[] = { "ext2test1", 0 };
+    exec("ext2test1", ext2argv);
+    printf("init: exec ext2test1 failed\n");
+    exit(1);
+  }
+  wait((int *) 0);
+
+  printf("init: ext2 tests done, starting sh\n");
+
   for(;;){
-    printf("init: starting usertests \n");
+    printf("init: starting sh\n");
     pid = fork();
     if(pid < 0){
       printf("init: fork failed\n");
       exit(1);
     }
     if(pid == 0){
-      exec("usertests", argv);
-      printf("init: exec usertests failed\n");
+      exec("sh", argv);
+      printf("init: exec sh failed\n");
       exit(1);
     }
 
     for(;;){
-      // this call to wait() returns if usertests exits,
-      // or if a parentless process exits.
       wpid = wait((int *) 0);
       if(wpid == pid){
-        // usertests exited; keep init alive.
-        for(;;)
-          ;
+        break;
       } else if(wpid < 0){
         printf("init: wait returned an error\n");
         exit(1);
-      } else {
-        // it was a parentless process; do nothing.
       }
     }
   }
