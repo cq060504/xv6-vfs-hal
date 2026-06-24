@@ -80,6 +80,25 @@ vfs_find_mountpoint(struct vnode *vp)
   return 0;
 }
 
+// Print all current mount points: path dev fstype
+void
+vfs_mount_info(void)
+{
+  int i;
+
+  if(nmount == 0){
+    printf("No filesystems mounted.\n");
+    return;
+  }
+  printf("%-24s %-12s %s\n", "MOUNTPOINT", "DEVICE", "TYPE");
+  for(i = 0; i < nmount; i++){
+    printf("%-24s /dev/disk%-2d   %s\n",
+           mounttable[i]->path,
+           mounttable[i]->dev,
+           mounttable[i]->fstype);
+  }
+}
+
 struct mount*
 vfs_mount(char *path, uint dev, char *fstype)
 {
@@ -93,6 +112,13 @@ vfs_mount(char *path, uint dev, char *fstype)
       return 0;
   }
 
+  // Reject duplicate mount of the same device
+  for(i = 0; i < nmount; i++){
+    if(mounttable[i]->dev == dev){
+      return 0;
+    }
+  }
+
   for(i = 0; i < nfstype; i++){
     if(strncmp(fstypes[i].name, fstype, 16) == 0){
       mp = fstypes[i].mountfn(dev);
@@ -101,6 +127,9 @@ vfs_mount(char *path, uint dev, char *fstype)
   }
   if(mp == 0) return 0;
   mp->valid = 0;  // not yet fully mounted
+
+  // Store fstype name in mount struct
+  safestrcpy(mp->fstype, fstype, 16);
 
   // Resolve mountpoint path to a vnode (except for root mount)
   if(strncmp(path, "/", 128) == 0){

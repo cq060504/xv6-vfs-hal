@@ -5,8 +5,14 @@
 int
 main(int argc, char *argv[])
 {
+  // No arguments: show mount table
+  if(argc == 1){
+    mount("", 0, "");
+    exit(0);
+  }
+
   if(argc != 4){
-    fprintf(2, "Usage: mount path dev fstype\n");
+    fprintf(2, "Usage: mount [path dev fstype]\n");
     exit(1);
   }
   int dev = atoi(argv[2]);

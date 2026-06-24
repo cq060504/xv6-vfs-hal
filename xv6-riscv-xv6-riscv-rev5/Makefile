@@ -4,7 +4,7 @@ U=user
 # Target architecture, default riscv, optional loongarch
 ARCH ?= riscv
 HAL = hal
-VIRTIO_NDISK ?= 1
+VIRTIO_NDISK ?= 2
 
 # Platform-independent kernel objects
 K_OBJS = \
@@ -243,9 +243,8 @@ UPROGS=\
 	$U/_mount\
 	$U/_umount\
 
-fs.img: mkfs/mkfs README $(UPROGS) ext2.img
+fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
-	cat ext2.img >> fs.img
 
 -include kernel/*.d user/*.d hal/*/*.d
 
@@ -253,11 +252,7 @@ fs1.img: fs.img
 	cp fs.img fs1.img
 
 ext2.img:
-ifeq ($(ARCH),loongarch)
-	dd if=/dev/zero of=ext2.img bs=1M count=1
-else
-	dd if=/dev/zero of=ext2.img bs=1M count=10
-endif
+	dd if=/dev/zero of=ext2.img bs=1M count=50
 	mkfs.ext2 -F -b 1024 ext2.img
 
 clean:
@@ -289,12 +284,12 @@ QEMUOPTS += -global virtio-mmio.force-legacy=false
 QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 ifeq ($(VIRTIO_NDISK),2)
-QEMUOPTS += -drive file=fs1.img,if=none,format=raw,id=x1
+QEMUOPTS += -drive file=ext2.img,if=none,format=raw,id=x1
 QEMUOPTS += -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1
 endif
 endif
 
-qemu: check-qemu-version $K/kernel $(if $(filter riscv,$(ARCH)),fs.img $(if $(filter 2,$(VIRTIO_NDISK)),fs1.img))
+qemu: check-qemu-version $K/kernel $(if $(filter riscv,$(ARCH)),fs.img $(if $(filter 2,$(VIRTIO_NDISK)),ext2.img))
 ifeq ($(ARCH),loongarch)
 	$(OBJCOPY) -O binary $K/kernel $K/kernel.bin
 	$(QEMU) $(QEMUOPTS) -bios $K/kernel.bin
@@ -305,7 +300,7 @@ endif
 .gdbinit: .gdbinit.tmpl-riscv
 	sed "s/:1234/:$(GDBPORT)/" < $^ > $@
 
-qemu-gdb: $K/kernel .gdbinit $(if $(filter riscv,$(ARCH)),fs.img $(if $(filter 2,$(VIRTIO_NDISK)),fs1.img))
+qemu-gdb: $K/kernel .gdbinit $(if $(filter riscv,$(ARCH)),fs.img $(if $(filter 2,$(VIRTIO_NDISK)),ext2.img))
 	@echo "*** Now run 'gdb' in another window." 1>&2
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
 

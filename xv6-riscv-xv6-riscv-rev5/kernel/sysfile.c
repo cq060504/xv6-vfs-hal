@@ -336,6 +336,13 @@ sys_mount(void)
 
   if(argstr(0, path, MAXPATH) < 0)
     return -1;
+
+  // Empty path means "show mount table"
+  if(path[0] == '\0'){
+    vfs_mount_info();
+    return 0;
+  }
+
   argint(1, &dev);
   if(argstr(2, fstype, sizeof(fstype)) < 0)
     return -1;

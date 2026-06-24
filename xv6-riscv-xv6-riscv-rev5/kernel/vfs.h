@@ -49,6 +49,7 @@ struct mount {
   struct vnode *mountpoint; // parent vnode where this FS is attached; NULL for root mount
   uint dev;                 // authoritative device number for all I/O within this mount
   char path[128];           // human-readable mount path (debugging only; use mountpoint for logic)
+  char fstype[16];          // filesystem type name (e.g. "ext2", "xv6fs")
   void *priv;               // FS-private mount data (e.g. superblock)
 };
 
@@ -84,6 +85,7 @@ void          vn_unlock(struct vnode*);
 
 struct mount* vfs_mount(char*, uint, char*);
 int           vfs_umount(char*);
+void          vfs_mount_info(void);
 struct mount* vfs_lookup_mount(struct vnode*);
 struct mount* vfs_find_mountpoint(struct vnode*);
 

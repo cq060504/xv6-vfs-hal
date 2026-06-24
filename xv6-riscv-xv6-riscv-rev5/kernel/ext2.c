@@ -25,13 +25,12 @@ struct ext2_mount_priv {
   struct ext2_bgdesc     bg;
   uint                   dev;
   uint                   inode_size; // s_inode_size from superblock (may be 128 or 256)
-  uint                   fs_offset;  // block offset for merged-image (FSSIZE)
   struct sleeplock       lock;   // serialize meta-data allocations (balloc/ialloc)
   struct mount          *mnt;    // back-pointer to VFS mount (set by ext2_mount)
 };
 
-// offset macro: all ext2 disk blocks are shifted by mp->fs_offset
-#define EBLK(mp, b) ((b) + (mp)->fs_offset)
+// block number identity (ext2 now lives on its own virtio disk, no offset needed)
+#define EBLK(mp, b) (b)
 
 // Per-vnode private data
 struct ext2_vnode_priv {
@@ -949,8 +948,8 @@ ext2_mount(uint dev)
   struct ext2_mount_priv *priv;
   struct buf *bp;
 
-  // Read superblock (block 1 at byte offset 1024, shifted past fs.img)
-  bp = bread(dev, 1 + FSSIZE);
+  // Read superblock (block 1)
+  bp = bread(dev, 1);
   if(bp == 0) return 0;
 
   priv = (struct ext2_mount_priv*)kalloc();
@@ -969,17 +968,13 @@ ext2_mount(uint dev)
     return 0;  // only 1024-byte blocks supported
   }
 
-  //priv->dev = dev;
-  //priv->fs_offset = FSSIZE;  // ext2 data starts after xv6 fs.img
-  //initsleeplock(&priv->lock, "ext2_alloc");
-
   priv->dev = dev;
-  priv->fs_offset = FSSIZE;  // ext2 data starts after xv6 fs.img
   priv->inode_size = priv->sb.s_inode_size;
   if(priv->inode_size == 0) priv->inode_size = 128;  // defaults to 128 per ext2 spec
   initsleeplock(&priv->lock, "ext2_alloc");
-  // Read block group descriptor (block 2 when block_size=1024, shifted past fs.img)
-  bp = bread(dev, 2 + FSSIZE);
+
+  // Read block group descriptor (block 2)
+  bp = bread(dev, 2);
   if(bp == 0){ kfree((void*)priv); return 0; }
   memmove(&priv->bg, bp->data, sizeof(struct ext2_bgdesc));
   brelse(bp);

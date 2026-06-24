@@ -51,8 +51,8 @@ static int test_l1_mount_cycle(void) {
     // 先确保 /mnt 未挂载 (连续 umount 直到失败)
     umount("/mnt");
 
-    // 首次 mount ext2
-    CHK(mount("/mnt", 1, "ext2") >= 0, "first mount failed");
+    // 首次 mount ext2 (dev=2 是第二个 virtio 磁盘 ext2.img)
+    CHK(mount("/mnt", 2, "ext2") >= 0, "first mount failed");
 
     // 创建文件验证 ext2 可用
     int fd = open("/mnt/t1_cycle", O_WRONLY | O_CREATE);
@@ -71,8 +71,8 @@ static int test_l1_mount_cycle(void) {
     // umount
     CHK(umount("/mnt") >= 0, "umount failed");
 
-    // 再次 mount
-    CHK(mount("/mnt", 1, "ext2") >= 0, "remount failed");
+    // 再次 mount (dev=2)
+    CHK(mount("/mnt", 2, "ext2") >= 0, "remount failed");
 
     // 文件应仍然存在 (ext2 持久化)
     fd = open("/mnt/t1_cycle", O_RDONLY);
@@ -94,8 +94,8 @@ static int test_l1_mount_cycle(void) {
 static int test_l1_mount_errors(void) {
   TEST("L1.2 mount error paths") {
     // mount 到已挂载的点应失败 (先 mount，再 mount 同一路径)
-    CHK(mount("/mnt", 1, "ext2") >= 0, "pre-mount for error test failed");
-    CHK(mount("/mnt", 1, "ext2") < 0, "double mount should fail");
+    CHK(mount("/mnt", 2, "ext2") >= 0, "pre-mount for error test failed");
+    CHK(mount("/mnt", 2, "ext2") < 0, "double mount should fail");
     umount("/mnt");
 
     // mount 到不存在的路径应失败
@@ -105,7 +105,7 @@ static int test_l1_mount_errors(void) {
     int fd = open("/mnt_bad", O_WRONLY | O_CREATE);
     CHKF(fd >= 0, "create /mnt_bad failed: fd=%d", fd);
     close(fd);
-    CHK(mount("/mnt_bad", 1, "ext2") < 0, "mount on a file should fail");
+    CHK(mount("/mnt_bad", 2, "ext2") < 0, "mount on a file should fail");
     unlink("/mnt_bad");
 
     // umount 非挂载点应失败
@@ -121,10 +121,10 @@ static int test_l1_mount_errors(void) {
 // L2 — ext2 核心 vnode_ops 全覆盖
 // ---------------------------------------------------------------------------
 
-// 辅助：重新挂载 ext2 到 /mnt
+// 辅助：重新挂载 ext2 到 /mnt (dev=2)
 static void remount_ext2(void) {
   umount("/mnt");
-  mount("/mnt", 1, "ext2");
+  mount("/mnt", 2, "ext2");
 }
 
 // L2.1: create + lookup (多层嵌套目录 + 文件)
@@ -468,23 +468,21 @@ static int test_l3_namei(void) {
 // L4 — 边界/并发/大文件
 // ---------------------------------------------------------------------------
 
-// L4.1: 多进程并发 open/write
+// L4.1: 多进程并发写（共享 fd，验证 vnode lock 序列化写操作）
 static int test_l4_concurrent(void) {
-  TEST("L4.1 concurrent write (fork)") {
+  TEST("L4.1 concurrent write (shared fd via fork)") {
     remount_ext2();
 
-    // 父进程创建文件
-    int fd0 = open("/mnt/l4conc", O_WRONLY | O_CREATE);
-    CHKF(fd0 >= 0, "create l4conc failed: fd=%d", fd0);
-    close(fd0);
+    // B8: 在 fork 之前打开文件，父子进程共享同一个 struct file (及 f->off)
+    // 由于 vnode lock 的序列化保护，两次写应追加而非覆盖
+    int fd = open("/mnt/l4conc", O_RDWR | O_CREATE);
+    CHKF(fd >= 0, "create l4conc failed: fd=%d", fd);
 
     int pid = fork();
     CHKF(pid >= 0, "fork failed: pid=%d", pid);
 
     if (pid == 0) {
       // 子进程写 128 字节 'A'
-      int fd = open("/mnt/l4conc", O_WRONLY);
-      if (fd < 0) exit(1);
       for (int i = 0; i < 128; i++) {
         char c = 'A';
         if (write(fd, &c, 1) != 1) { close(fd); exit(2); }
@@ -493,8 +491,6 @@ static int test_l4_concurrent(void) {
       exit(0);
     } else {
       // 父进程写 128 字节 'B'
-      int fd = open("/mnt/l4conc", O_WRONLY);
-      if (fd < 0) { wait(0); FAIL("parent open failed"); }
       for (int i = 0; i < 128; i++) {
         char c = 'B';
         if (write(fd, &c, 1) != 1) { close(fd); wait(0); FAIL("parent write failed"); }
@@ -503,10 +499,23 @@ static int test_l4_concurrent(void) {
       wait(0);
     }
 
-    // 验证总大小 256
+    // 验证总大小 256 (两个进程各写 128，vnode lock 保证串行追加)
     struct stat st;
     CHK(stat("/mnt/l4conc", &st) >= 0, "stat l4conc failed");
     CHKF(st.size == 256, "concurrent size expected 256, got %d", (int)st.size);
+
+    // 验证内容：128 字节后应该是 'A' 或 'B'（顺序取决于调度）
+    fd = open("/mnt/l4conc", O_RDONLY);
+    CHKF(fd >= 0, "reopen for verify failed: fd=%d", fd);
+    char buf[256];
+    int n = read(fd, buf, sizeof(buf));
+    CHKF(n == 256, "verify read expected 256, got %d", n);
+    // 检查前 128 字节和后 128 字节分别全是同一字符
+    char first = buf[0];
+    for (int i = 1; i < 128; i++) CHKF(buf[i] == first, "first half mixed");
+    char second = buf[128];
+    for (int i = 129; i < 256; i++) CHKF(buf[i] == second, "second half mixed");
+    close(fd);
 
     unlink("/mnt/l4conc");
     umount("/mnt");
@@ -538,9 +547,9 @@ static int test_l4_unlink_while_open(void) {
     // 实际验证：close 后数据持久化到 ext2 即可
     close(fd);
 
-    // 重新 mount 验证文件确实被删除
+    // 重新 mount (dev=2) 验证文件确实被删除
     umount("/mnt");
-    CHK(mount("/mnt", 1, "ext2") >= 0, "remount failed");
+    CHK(mount("/mnt", 2, "ext2") >= 0, "remount failed");
     fd = open("/mnt/l4uwo", O_RDONLY);
     CHKF(fd < 0, "file should not persist after unlink+remount, fd=%d", fd);
 
