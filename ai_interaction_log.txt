@@ -182,3 +182,85 @@ ext2test1: test_copy_file 全部 4 项 succeed (同上)
     user/ext2test1/2/3.c           — ext2 测试程序
     user/user.h, user/usys.pl      — 新增系统调用声明
 
+--- Session 4: 2026-06-24 ---
+任务: 分析同事 "ext2 独立磁盘" 改动导致 LoongArch 无法启动的问题
+
+同事改动 (commit 92b6a4c):
+- ext2 使用独立 virtio 磁盘 (dev=2), 移除 EBLK 中的 fs_offset 偏移
+- bio.c bread() 增加设备号合法性检查 (dev < 1 || dev > VIRTIO_NDISK)
+- mount 无参数时显示挂载表, vfs_mount 拒绝同一设备重复挂载
+- struct mount 新增 fstype 字段
+- VIRTIO_NDISK 默认值 1 → 2
+- ext2.img 不再追加到 fs.img (cat ext2.img >> fs.img 已删除)
+- ext2.img 增大到 50MB
+- QEMU RISC-V 第二磁盘从 fs1.img 改为 ext2.img
+- init.c mount 设备号 1 → 2
+
+LoongArch 编译和启动测试:
+- 编译: 成功 (所有 .c/.S 文件编译通过, 内核链接成功)
+- kernel.bin 大小: 4,207,040 bytes (~4.0MB)
+- QEMU 启动: 失败 — "Could not load ROM image 'kernel/kernel.bin'"
+
+根因分析:
+
+问题1: VIRTIO_NDISK=2 导致 LoongArch 嵌入双份映像
+  LoongArch 使用 ramdisk, 通过 objcopy 将 fs.img 嵌入内核:
+    LOONGARCH_FS_OBJS = fs_img.o + fs1_img.o (VIRTIO_NDISK=2 时)
+  fs1.img = fs.img 的副本 (都是 xv6 文件系统, 2MB)
+  kernel.bin = 内核代码(~0.5MB) + fs_img.o(2MB) + fs1_img.o(2MB) = ~4.2MB
+  QEMU LoongArch virt 的 -bios ROM 加载限制约为 4MB, 超限导致加载失败。
+
+问题2: ext2.img 未嵌入 LoongArch 内核
+  ext2.img 是 50MB 独立文件, Makefile 中只供 RISC-V 的 -drive 使用
+  LoongArch 没有 virtio 磁盘, 依赖 ramdisk 嵌入映像
+  ext2.img 50MB 即使想嵌入也不可能 (ROM 限制 ~4MB, ramdisk 限制 8MB)
+
+问题3: 双 ramdisk 中的 fs1.img 是 xv6 而非 ext2
+  即使 kernel.bin 能加载, ramdisk[1] (dev=2) 的内容是 fs1.img(=fs.img 副本),
+  即 xv6 文件系统而非 ext2。ext2 无法挂载, mount("/mnt", 2, "ext2") 会失败。
+
+可行解决方案 (按难度排序):
+
+[方案1: 最简单] LoongArch VIRTIO_NDISK=1, ext2 回到 fs.img 偏移方式
+  难度: ★☆☆☆☆ | 修改量: ~5 行
+  思路: LoongArch 不使用双磁盘, ext2 数据追加到 fs.img (旧方式)
+  改动:
+  - Makefile: ifeq($(ARCH),loongarch) VIRTIO_NDISK=1
+  - Makefile: LoongArch 的 fs.img 追加 ext2.img (恢复 cat ext2.img >> fs.img)
+  - Makefile: ext2.img LoongArch 用 1-2MB, RISC-V 用 50MB
+  - init.c: mount("/mnt", 1, "ext2") 恢复 dev=1 (或条件编译)
+  优点: 改动最小, 已验证可行
+  缺点: RISC-V 和 LoongArch 架构差异体现在 Makefile 条件编译中
+
+[方案2: 简单] 为 LoongArch 单独嵌入 ext2_img.o 替代 fs1_img.o
+  难度: ★★☆☆☆ | 修改量: ~10 行
+  思路: LoongArch 第二个 ramdisk 嵌入 ext2.img 而非 fs1.img (xv6 副本)
+  改动:
+  - Makefile: LOONGARCH_FS_OBJS 中 fs1_img.o 替换为 ext2_img.o
+  - Makefile: 新增 $K/ext2_img.o 规则 (objcopy ext2.img)
+  - Makefile: ext2.img 对 LoongArch 限制为 2MB (适配 ROM 限制)
+  - init.c: mount dev=2 不变
+  优点: ext2 在独立设备上, 架构设计与同事一致
+  缺点: 仍需控制 ext2.img 大小, kernel.bin 依然接近 ROM 上限
+
+[方案3: 中等] 增大 ramdisk 支持, 调整嵌入策略优化大小
+  难度: ★★★☆☆ | 修改量: ~15 行
+  思路: 在方案2基础上, 优化 fs.img 嵌入 (只嵌入需要的部分)
+  改动:
+  - 创建精简版 fs.img 用于 LoongArch (不含用户程序? 但在磁盘上需要)
+  - 或使用压缩嵌入 (objcopy --compress-debug-sections)
+  优点: 解决大小问题的同时保留独立磁盘架构
+  缺点: 压缩需要启动时解压, 增加代码复杂度
+
+[方案4: 困难] 为 LoongArch 实现 PCI virtio 磁盘驱动
+  难度: ★★★★★ | 修改量: 大量
+  思路: 用真实 virtio 磁盘替代 ramdisk, 与 RISC-V 架构统一
+  改动:
+  - hal/loongarch/hal_virtio.c 完全重写 (PCI 枚举 + virtio-over-PCI)
+  - QEMU 命令行添加 -drive 参数
+  - 需要大量测试
+  优点: 架构统一, 无 ROM 大小限制, ext2 可用 50MB
+  缺点: 工作量大, 风险高
+
+推荐: [方案1] 或 [方案2], 优先 [方案1] (最安全, 已验证可行)
+

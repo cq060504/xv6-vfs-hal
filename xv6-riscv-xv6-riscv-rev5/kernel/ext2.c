@@ -25,12 +25,18 @@ struct ext2_mount_priv {
   struct ext2_bgdesc     bg;
   uint                   dev;
   uint                   inode_size; // s_inode_size from superblock (may be 128 or 256)
+  uint                   fs_offset;  // 0 when ext2 on its own disk, FSSIZE when appended to fs.img
   struct sleeplock       lock;   // serialize meta-data allocations (balloc/ialloc)
   struct mount          *mnt;    // back-pointer to VFS mount (set by ext2_mount)
 };
 
-// block number identity (ext2 now lives on its own virtio disk, no offset needed)
+// On RISC-V (VIRTIO_NDISK=2) ext2 has its own disk, offset is 0.
+// On LoongArch (VIRTIO_NDISK=1) ext2 is appended to fs.img, offset is FSSIZE.
+#if VIRTIO_NDISK >= 2
 #define EBLK(mp, b) (b)
+#else
+#define EBLK(mp, b) ((b) + (mp)->fs_offset)
+#endif
 
 // Per-vnode private data
 struct ext2_vnode_priv {
@@ -948,12 +954,19 @@ ext2_mount(uint dev)
   struct ext2_mount_priv *priv;
   struct buf *bp;
 
-  // Read superblock (block 1)
-  bp = bread(dev, 1);
-  if(bp == 0) return 0;
-
   priv = (struct ext2_mount_priv*)kalloc();
-  if(priv == 0){ brelse(bp); return 0; }
+  if(priv == 0) return 0;
+  priv->dev = dev;
+  priv->inode_size = 128;  // default per ext2 spec, updated after superblock read
+#if VIRTIO_NDISK >= 2
+  priv->fs_offset = 0;     // ext2 on its own disk, no offset
+#else
+  priv->fs_offset = FSSIZE; // ext2 appended to fs.img, shifted by xv6 fs size
+#endif
+
+  // Read superblock (block 1 on disk = EBLK(1) on merged image)
+  bp = bread(dev, EBLK(priv, 1));
+  if(bp == 0){ kfree((void*)priv); return 0; }
   memmove(&priv->sb, bp->data, sizeof(struct ext2_superblock));
   brelse(bp);
 
@@ -968,13 +981,12 @@ ext2_mount(uint dev)
     return 0;  // only 1024-byte blocks supported
   }
 
-  priv->dev = dev;
   priv->inode_size = priv->sb.s_inode_size;
-  if(priv->inode_size == 0) priv->inode_size = 128;  // defaults to 128 per ext2 spec
+  if(priv->inode_size == 0) priv->inode_size = 128;
   initsleeplock(&priv->lock, "ext2_alloc");
 
   // Read block group descriptor (block 2)
-  bp = bread(dev, 2);
+  bp = bread(dev, EBLK(priv, 2));
   if(bp == 0){ kfree((void*)priv); return 0; }
   memmove(&priv->bg, bp->data, sizeof(struct ext2_bgdesc));
   brelse(bp);

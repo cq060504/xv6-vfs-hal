@@ -25,7 +25,11 @@ main(void)
 
   // Create directories and files needed by tests
   mkdir("/mnt");
+#if VIRTIO_NDISK >= 2
   mount("/mnt", 2, "ext2");
+#else
+  mount("/mnt", 1, "ext2");
+#endif
   mkdir("/tests");
   // Create /hello.c so cross-fs copy tests have a source file
   int fd = open("/hello.c", O_WRONLY | O_CREATE);

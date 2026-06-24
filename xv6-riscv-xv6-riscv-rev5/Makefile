@@ -4,7 +4,13 @@ U=user
 # Target architecture, default riscv, optional loongarch
 ARCH ?= riscv
 HAL = hal
+# LoongArch uses a single ramdisk (VIRTIO_NDISK=1) — ext2 is appended to fs.img
+# RISC-V uses two virtio disks — ext2 lives on its own disk (dev=2)
+ifeq ($(ARCH),loongarch)
+VIRTIO_NDISK ?= 1
+else
 VIRTIO_NDISK ?= 2
+endif
 
 # Platform-independent kernel objects
 K_OBJS = \
@@ -140,7 +146,7 @@ endif
 
 LDFLAGS = -z max-page-size=4096
 
-LOONGARCH_FS_OBJS = $(if $(filter loongarch,$(ARCH)),$K/fs_img.o $(if $(filter 2,$(VIRTIO_NDISK)),$K/fs1_img.o))
+LOONGARCH_FS_OBJS = $(if $(filter loongarch,$(ARCH)),$K/fs_img.o $(if $(filter loongarch,$(ARCH)),$(if $(filter 2,$(VIRTIO_NDISK)),$K/fs1_img.o)))
 
 $K/kernel: $(OBJS) $(HAL)/$(ARCH)/kernel.ld $(LOONGARCH_FS_OBJS)
 	$(LD) $(LDFLAGS) -T $(HAL)/$(ARCH)/kernel.ld -o $K/kernel $(OBJS) $(LOONGARCH_FS_OBJS)
@@ -243,8 +249,11 @@ UPROGS=\
 	$U/_mount\
 	$U/_umount\
 
-fs.img: mkfs/mkfs README $(UPROGS)
+fs.img: mkfs/mkfs README $(UPROGS) $(if $(filter loongarch,$(ARCH)),ext2.img)
 	mkfs/mkfs fs.img README $(UPROGS)
+ifeq ($(ARCH),loongarch)
+	cat ext2.img >> fs.img
+endif
 
 -include kernel/*.d user/*.d hal/*/*.d
 
@@ -252,7 +261,11 @@ fs1.img: fs.img
 	cp fs.img fs1.img
 
 ext2.img:
+ifeq ($(ARCH),loongarch)
+	dd if=/dev/zero of=ext2.img bs=1M count=1
+else
 	dd if=/dev/zero of=ext2.img bs=1M count=50
+endif
 	mkfs.ext2 -F -b 1024 ext2.img
 
 clean:
