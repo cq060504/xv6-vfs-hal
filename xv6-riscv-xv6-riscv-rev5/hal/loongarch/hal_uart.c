@@ -41,10 +41,23 @@ __attribute__ ((section(".text.entry")))
 void
 uartinit(void)
 {
-  // On QEMU LoongArch: FIFO reset causes internal assertion crash.
-  // Keep UART register config minimal — the emulated UART works with defaults.
-  // Only init the lock for now. Full config deferred to Week 7.
+  // Minimal UART init for QEMU LoongArch — avoid FIFO reset (FCR write)
+  // which causes internal assertion crash in some QEMU versions.
   initlock(&tx_lock, "uart");
+
+  // Disable interrupts during config.
+  WriteReg(IER, 0);
+
+  // Set baud rate divisor (38.4K with 1.8432 MHz clock → divisor 3).
+  WriteReg(LCR, LCR_BAUD_LATCH);
+  WriteReg(0, 0x03);  // DLL (divisor low)
+  WriteReg(1, 0x00);  // DLM (divisor high)
+
+  // 8 data bits, no parity, 1 stop bit.
+  WriteReg(LCR, LCR_EIGHT_BITS);
+
+  // Enable RX interrupt so keyboard input wakes up the shell.
+  WriteReg(IER, IER_RX_ENABLE);
 }
 
 void

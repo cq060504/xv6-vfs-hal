@@ -183,6 +183,15 @@ clockintr()
   // the interrupt request. 1000000 is about a tenth
   // of a second.
   hal_set_timer(hal_get_time() + 1000000);
+
+#ifdef ARCH_loongarch
+  // LoongArch QEMU UART RX interrupt may not fire reliably.
+  // Poll the UART on each timer tick so keyboard input works.
+  {
+    extern void uartintr(void);
+    uartintr();
+  }
+#endif
 }
 
 // check if it's an external interrupt or software interrupt,

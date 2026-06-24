@@ -264,3 +264,53 @@ LoongArch 编译和启动测试:
 
 推荐: [方案1] 或 [方案2], 优先 [方案1] (最安全, 已验证可行)
 
+--- Session 5: 2026-06-24 ---
+任务: 实施方案1 — LoongArch VIRTIO_NDISK=1, ext2 回到合并镜像方式
+
+实施步骤:
+
+1. Makefile — VIRTIO_NDISK 按架构区分
+   ifeq ($(ARCH),loongarch)
+   VIRTIO_NDISK ?= 1    # LoongArch: 单 ramdisk, ext2 追加到 fs.img
+   else
+   VIRTIO_NDISK ?= 2    # RISC-V: 双 virtio 磁盘, ext2 独立 dev=2
+   endif
+
+2. Makefile — fs.img 目标
+   LoongArch 时 fs.img 追加 ext2.img (恢复 cat ext2.img >> fs.img)
+   RISC-V 时 fs.img 仅为 xv6 文件系统 (不加 ext2)
+
+3. Makefile — ext2.img 大小
+   LoongArch: 1MB (内核嵌入, 受 ROM 4MB 限制)
+   RISC-V: 50MB (virtio 磁盘, 无大小限制)
+
+4. Makefile — LOONGARCH_FS_OBJS
+   仅 fs_img.o (NDISK=1), 不再嵌入 fs1_img.o
+
+5. kernel/ext2.c — 恢复 fs_offset 支持
+   #if VIRTIO_NDISK >= 2
+   #define EBLK(mp, b) (b)              // RISC-V: ext2 在独立磁盘, 无偏移
+   #else
+   #define EBLK(mp, b) ((b) + (mp)->fs_offset)  // LoongArch: ext2 偏移 FSSIZE
+   #endif
+   ext2_mount() 中设置 priv->fs_offset = FSSIZE (NDISK=1 时) 或 0
+
+6. user/init.c — mount 设备号条件编译
+   #if VIRTIO_NDISK >= 2
+   mount("/mnt", 2, "ext2");   // RISC-V
+   #else
+   mount("/mnt", 1, "ext2");   // LoongArch
+   #endif
+
+测试结果:
+=== LoongArch ===
+- kernel.bin: 3.1MB (< 4MB ROM 限制)
+- QEMU 启动: 成功 (start: begin → main → ramdisk1 → init: starting sh → $)
+- ext2 挂载: 通过 (dev=1, fs_offset=FSSIZE)
+
+=== RISC-V ===
+- VIRTIO_NDISK=2, ext2.img 50MB 作为独立磁盘
+- 编译成功, 测试因超时未完成 (大 ext2.img 编译耗时)
+
+提交: commit 1e7f0ac (merge-vfs-hal 分支)
+
