@@ -5,6 +5,13 @@ _*
 *.asm
 *.sym
 *.img
+*.md
+*.out
+*.toc
+*.pdf
+*.fdb_latexmk
+*.txt
+*.html
 vectors.S
 bootblock
 entryother
@@ -25,3 +32,4 @@ xv6-loongarch-exp-main/
 xv6-riscv-xv6-riscv-rev5/.claude/
 xv6-riscv-xv6-riscv-rev5/.openclaude/
 xv6-riscv-xv6-riscv-rev5/others/
+xv6-riscv-xv6-riscv-rev5/question_answer/

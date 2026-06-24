@@ -91,3 +91,94 @@ ext2test1: test_copy_file 全部 4 项 succeed (同上)
 - usertrap(): unexpected scause 0xd (缺页异常)，不影响测试结果
 - ext2test3 有 L4 测试问题，按同事建议跳过
 
+--- 合并过程中修改的文件清单（供同事参考）---
+
+一、手动解决冲突的文件（可能影响 VFS 行为）:
+
+1. kernel/main.c
+   改动: 保留 HAL 的初始化序列 hal_irq_init/hal_irq_hart_init/hal_timer_init，
+         同时保留 VFS 的 vfs_init/fileinit/virtio_disk_init/userinit
+   潜在影响: 无。HAL 中断控制器接口与 VFS 无关
+
+2. kernel/vm.c
+   改动: 保留 HAL 的 ARCH_loongarch 条件编译结构（kvmmake/kvminithart），
+         VFS 新增的 VIRTIO0/1 映射已在 RISC-V #else 分支中存在
+   潜在影响: 无。VFS 不直接操作页表
+
+3. kernel/trap.c
+   改动: 保留 HAL 的 hal_console_intr(consoleintr)，替换 VFS 的 uartintr()
+         保留 HAL 的 VIRTIO_NDISK 条件编译（VIRTIO1_IRQ）
+   潜在影响: 无。hal_console_intr 内部调用 uartintr，功能等价
+
+4. Makefile
+   改动: 合并 VFS 的 vfs.o/xv6fs.o/ext2.o 到 K_OBJS
+         保留 HAL 的 VIRTIO_NDISK 多磁盘支持
+         保留 HAL 的 LoongArch 工具链/CFLAGS/QEMU 配置
+         新增 ext2.img 大小按架构区分（LoongArch 1MB, RISC-V 10MB）
+         新增 ext2.img 构建规则（dd + mkfs.ext2）
+   潜在影响: ext2.img 在 LoongArch 上仅 1MB（受内核嵌入 ROM 限制），
+             RISC-V 保持 10MB 不变
+
+5. hal/riscv/hal_virtio.c
+   改动: 保留 HAL 版本（VIRTIO_NDISK 多磁盘支持 + disk_for_dev 架构）
+         未采用 VFS 的单磁盘版本
+   潜在影响: 无。VFS 通过 bio.c 间接使用 virtio 磁盘，不直接调用
+
+6. hal/riscv/hal_plic.c
+   改动: 保留 HAL 版本（VIRTIO_NDISK>1 时启用 VIRTIO1_IRQ +
+         hal_irq_init/hart_init/claim/complete 包装函数）
+   潜在影响: 无。VFS 不直接操作中断控制器
+
+7. hal/hal_ctx.h
+   改动: 保留 HAL 版本（双架构 #ifdef ARCH_loongarch +
+         hal_switch 使用单指针参数）
+   潜在影响: 无。hal_switch 由 proc.c 调度器调用，VFS 不涉及
+
+8. hal/hal_arch.h
+   改动: 保留 HAL 版本（新增 hal_cpu_idle() 声明）
+   潜在影响: 无
+
+9. hal/riscv/arch.h / memlayout.h / hal_start.c / hal_uart.c / hal_swtch.S
+   改动: 保留 HAL 版本（平台实现层，VFS 不依赖）
+   潜在影响: 无
+
+二、为解决 LoongArch 问题修改的文件:
+
+10. hal/loongarch/hal_virtio.c
+    改动: RAMDISK_MAX_PAGES 512 → 2048（使 ramdisk 能容纳 8MB 镜像）
+    潜在影响: 只影响 LoongArch，RISC-V 不受影响
+
+11. Makefile（二次修改）
+    改动: ext2.img 构建规则中，LoongArch 使用 count=1 (1MB)，
+          RISC-V 使用 count=10 (10MB)
+
+三、测试相关修改:
+
+12. user/init.c
+    改动: 删除了自动运行 ext2test2/ext2test1 的代码，
+         恢复为"环境初始化 + 启动 sh"模式
+    环境初始化保留: mkdir /mnt, mount("/mnt", 1, "ext2"),
+                    mkdir /tests, 创建 /hello.c 和 /tests/hello.c
+    使用方式: 在 shell 中手动输入 ext2test2 然后 ext2test1
+    潜在影响: 如果同事之前依赖 init 自动运行测试，需要改为手动输入
+
+四、VFS 分支自动合并的文件（未经手动修改）:
+
+    kernel/vfs.c, kernel/vfs.h     — VFS 层核心
+    kernel/xv6fs.c                 — xv6 文件系统 VFS 后端
+    kernel/ext2.c, kernel/ext2.h   — ext2 文件系统实现
+    kernel/file.c, kernel/file.h   — 文件描述符改为 vnode
+    kernel/fs.c, kernel/fs.h       — 保留用于 xv6fs 内部操作
+    kernel/sysfile.c               — 系统调用路由到 vfs_*
+    kernel/proc.c, kernel/proc.h   — cwd 改为 vnode
+    kernel/exec.c                  — 基于 vnode 的 exec 加载
+    kernel/defs.h                  — 新增 VFS 相关函数声明
+    kernel/bdev.h                  — 空文件（块设备抽象占位）
+    kernel/bio.c, kernel/console.c — 轻微修改
+    kernel/syscall.c/h, fcntl.h    — 新增 mount/umount 系统调用
+    kernel/sleeplock.h, spinlock.h — 轻微修改
+    kernel/pipe.c                  — 轻微修改
+    user/mount.c, user/umount.c    — 用户态 mount/umount 命令
+    user/ext2test1/2/3.c           — ext2 测试程序
+    user/user.h, user/usys.pl      — 新增系统调用声明
+
