@@ -94,6 +94,9 @@ bread(uint dev, uint blockno)
 {
   struct buf *b;
 
+  if(dev < 1 || dev > VIRTIO_NDISK)
+    return 0;
+
   b = bget(dev, blockno);
   if(!b->valid) {
     virtio_disk_rw(b, 0);
