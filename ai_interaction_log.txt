@@ -182,3 +182,76 @@ ext2test1: test_copy_file 全部 4 项 succeed (同上)
     user/ext2test1/2/3.c           — ext2 测试程序
     user/user.h, user/usys.pl      — 新增系统调用声明
 
+--- Session 5: ext2test3 L1 mount 测试在 LoongArch 上失败调查 ---
+
+错误:
+  [L1 - mount/umount 体系] ... FAIL [test_l1_mount_cycle:55] first mount failed
+  [L1 - mount 错误路径] ... FAIL [test_l1_mount_errors:97] pre-mount for error test failed
+
+判断: VFS 问题（RISC-V 通过, LoongArch 失败, 同一份 VFS 代码）
+
+调试过程:
+1. 在 vfs_mount 各失败点加 debug print
+2. 在 ext2_mount 各失败点加 debug print
+3. 在 init.c 中直接测试 umount+remount: rc=0 均成功
+4. 在 init.c 中 fork+exec ext2test3: L1 全部 PASS
+5. "dup path '/mnt' vs '/mnt'" — /mnt 仍在 mounttable 中
+
+关键发现:
+- ext2test3 test_l1_mount_cycle 结尾的 umount("/mnt") (line 86) 悄悄失败(返回值未检查)
+- umount 失败后 mounttable 中仍保留 "/mnt" 条目
+- 下一个测试 test_l1_mount_errors 调用 mount("/mnt") 时触发 vfs_mount 的"重复路径"检查被拒绝
+
+为同事提供的排查建议:
+1. ext2test3.c line 86: 修改 umount("/mnt") 为 CHK(umount("/mnt") >= 0, "...")
+   以确认 umount 是否确实失败
+2. 如果是 umount 失败: 在 vfs_umount() 各失败点加 printf 定位具体原因
+   - nmount==0? idx==0 (root mount)? mp==0? mp->valid==0?
+3. 可能是 ext2 的 root vnode 在 umount 时还有活跃引用导致无法完全清理
+4. 或者是 umount 成功但 ext2_unmount 中的 vput(mp->root) 触发的
+   ext2_destroy 回调中 write_inode 失败导致后续状态异常
+
+注意: 从 init.c fork 直接运行 ext2test3 时测试通过, 说明问题可能与 ext2 文件
+系统的运行时状态有关 (如之前运行过 ext2test2 写入文件后, ext2 的 block/inode
+分配状态与干净挂载时不同)
+
+--- Session 6: 2026-06-25 ---
+任务: 修复 ext2test3 L1/L2 在 LoongArch 上的失败
+
+之前的初步调查方向有误 (以为是 umount 失败)。深入调试后发现真正的根因。
+
+根因:
+bio.c bread() 函数缺少设备号验证。同事在 commit 92b6a4c 中添加了:
+  if(dev < 1 || dev > VIRTIO_NDISK) return 0;
+但此改动在 VFS→HAL 合并时丢失。
+
+ext2test3 L1.2 测试中有 mount("/nonexistent", 2, "ext2") 调用 (dev=2)。
+LoongArch 只有 VIRTIO_NDISK=1, dev=2 应该被 bread() 拒绝并返回 NULL,
+从而让 ext2_mount(2) 返回 NULL, mount() 返回 -1 (正确的错误处理)。
+
+但由于 bio.c 缺少 dev 检查, bread(2, ...) 直接调用
+virtio_disk_rw(b, 0) → ramdisk_for_dev(2) → panic("ramdisk_for_dev")。
+
+修复:
+kernel/bio.c bread() 添加设备号验证:
+  if(dev < 1 || dev > VIRTIO_NDISK) return 0;
+
+LoongArch ext2test3 结果: 14 passed, 1 failed (L4.1 并发写, 同事已知问题)
+RISC-V: 无影响 (VIRTIO_NDISK=2, 同样受 dev check 保护)
+
+提交: 82fc0e0
+
+--- Session 6b: 2026-06-25 ---
+任务: 修复修复后 shell 无法输入命令
+
+根因:
+kernel/trap.c clockintr() 中的 LoongArch UART 轮询代码
+(#ifdef ARCH_loongarch, uartintr() call) 在之前的合并/编辑中丢失。
+
+修复:
+恢复 clockintr() 中的 #ifdef ARCH_loongarch 轮询:
+每个时钟 tick (100ms) 调用 uartintr() 检查 UART LSR RX_READY 位,
+将接收的字符送入 consoleintr()。
+
+提交: 141724b
+
