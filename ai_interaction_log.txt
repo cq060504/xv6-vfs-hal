@@ -314,3 +314,27 @@ LoongArch 编译和启动测试:
 
 提交: commit 1e7f0ac (merge-vfs-hal 分支)
 
+6.24 loongarch输入无响应
+ 问题原因 & 修复
+
+
+  1. UART 未初始化（hal/loongarch/hal_uart.c）
+  1. UART 未初始化（hal/loongarch/hal_uart.c）
+
+  原来的 uartinit() 只初始化了锁，完全没有配置 UART 硬件。不改动 FIFO（会触发 QEMU 崩溃），但加了必要的波特率、8N1 模式、以及
+  IER_RX_ENABLE 来启用接收中断。
+
+  2. LoongArch EIOINTC UART 中断不可靠（kernel/trap.c）
+
+  即使启用了 RX 中断，QEMU LoongArch 上 EIOINTC 的 UART 中断传递可能不触发。在 clockintr() 中加了 #ifdef ARCH_loongarch 的轮询
+  fallback——每次时钟中断（100ms）调用 uartintr() 检查 LSR 的 RX_READY 位来获取输入字符。
+
+  测试结果
+
+  $ echo test
+  test
+  $ ext2test2
+  test_cross_fs_copy(): succeed
+  $ ext2test1
+  test_copy_file(...): succeed  (全部4项通过)
+
