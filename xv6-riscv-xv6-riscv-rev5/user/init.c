@@ -23,22 +23,6 @@ main(void)
   dup(0);  // stdout
   dup(0);  // stderr
 
-  // Create directories and files needed by tests
-  mkdir("/mnt");
-  mount("/mnt", 1, "ext2");
-  mkdir("/tests");
-  // Create /hello.c so cross-fs copy tests have a source file
-  int fd = open("/hello.c", O_WRONLY | O_CREATE);
-  if(fd >= 0){
-    write(fd, "hello from xv6fs\n", 17);
-    close(fd);
-  }
-  fd = open("/tests/hello.c", O_WRONLY | O_CREATE);
-  if(fd >= 0){
-    write(fd, "hello from xv6fs\n", 17);
-    close(fd);
-  }
-
   // Start a shell.  Manually run commands to test:
   //   usertests -q           — xv6 usertests
   //   ext2test2; ext2test1   — ext2 tests (order matters)

@@ -220,9 +220,9 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 UPROGS=\
 	$U/_cat\
 	$U/_echo\
-	$U/_ext2test1\
-	$U/_ext2test2\
-	$U/_ext2test3\
+	$U/_test1\
+	$U/_test2\
+	$U/_ext2test\
 	$U/_forktest\
 	$U/_grep\
 	$U/_init\
@@ -243,8 +243,8 @@ UPROGS=\
 	$U/_mount\
 	$U/_umount\
 
-fs.img: mkfs/mkfs README $(UPROGS) ext2.img
-	mkfs/mkfs fs.img README $(UPROGS)
+fs.img: mkfs/mkfs README $(UPROGS) ext2.img user/hello.c demo.sh
+	mkfs/mkfs fs.img README $(UPROGS) user/hello.c demo.sh
 	cat ext2.img >> fs.img
 
 -include kernel/*.d user/*.d hal/*/*.d

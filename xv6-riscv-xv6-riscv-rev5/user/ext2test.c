@@ -468,33 +468,27 @@ static int test_l3_namei(void) {
 // L4 — 边界/并发/大文件
 // ---------------------------------------------------------------------------
 
-// L4.1: 多进程并发 open/write
+// L4.1: 多进程并发共享 fd (fork 继承 fd，共享 f->off)
 static int test_l4_concurrent(void) {
   TEST("L4.1 concurrent write (fork)") {
     remount_ext2();
 
-    // 父进程创建文件
-    int fd0 = open("/mnt/l4conc", O_WRONLY | O_CREATE);
-    CHKF(fd0 >= 0, "create l4conc failed: fd=%d", fd0);
-    close(fd0);
+    // 父进程创建文件，不 close —— 父子通过继承的 fd 共享同一个 f->off
+    int fd = open("/mnt/l4conc", O_WRONLY | O_CREATE);
+    CHKF(fd >= 0, "create l4conc failed: fd=%d", fd);
 
     int pid = fork();
     CHKF(pid >= 0, "fork failed: pid=%d", pid);
 
     if (pid == 0) {
-      // 子进程写 128 字节 'A'
-      int fd = open("/mnt/l4conc", O_WRONLY);
-      if (fd < 0) exit(1);
+      // 子进程使用继承的 fd，写 128 字节 'A'
       for (int i = 0; i < 128; i++) {
         char c = 'A';
-        if (write(fd, &c, 1) != 1) { close(fd); exit(2); }
+        if (write(fd, &c, 1) != 1) { exit(2); }
       }
-      close(fd);
       exit(0);
     } else {
-      // 父进程写 128 字节 'B'
-      int fd = open("/mnt/l4conc", O_WRONLY);
-      if (fd < 0) { wait(0); FAIL("parent open failed"); }
+      // 父进程使用同一个 fd，写 128 字节 'B'
       for (int i = 0; i < 128; i++) {
         char c = 'B';
         if (write(fd, &c, 1) != 1) { close(fd); wait(0); FAIL("parent write failed"); }
@@ -503,7 +497,7 @@ static int test_l4_concurrent(void) {
       wait(0);
     }
 
-    // 验证总大小 256
+    // 验证总大小 256 (128+128，即使交错执行也会各自追加)
     struct stat st;
     CHK(stat("/mnt/l4conc", &st) >= 0, "stat l4conc failed");
     CHKF(st.size == 256, "concurrent size expected 256, got %d", (int)st.size);
