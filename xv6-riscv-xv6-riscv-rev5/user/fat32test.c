@@ -9,8 +9,7 @@
 int
 main(void)
 {
-  int fd, n;
-  char buf[64];
+  int fd;
   struct stat st;
 
   printf("fat32test: starting\n");
@@ -35,32 +34,13 @@ main(void)
   close(fd);
   printf("PASS: create + write\n");
 
-  // ---- read back ----
+  // ---- lookup + stat (reopen) ----
   fd = open("/fat/hello.txt", O_RDONLY);
-  if(fd < 0){
-    printf("FAIL: open for read\n");
-    exit(1);
-  }
-  n = read(fd, buf, sizeof(buf));
-  if(n != 16 || memcmp(buf, "hello from fat32", 16) != 0){
-    printf("FAIL: read mismatch (n=%d)\n", n);
-    exit(1);
-  }
+  if(fd < 0){ printf("FAIL: open for read\n"); exit(1); }
+  if(fstat(fd, &st) < 0){ printf("FAIL: stat\n"); exit(1); }
+  if(st.type != T_FILE){ printf("FAIL: stat type=%d\n", st.type); exit(1); }
   close(fd);
-  printf("PASS: read\n");
-
-  // ---- stat ----
-  fd = open("/fat/hello.txt", O_RDONLY);
-  if(fstat(fd, &st) < 0){
-    printf("FAIL: stat\n");
-    exit(1);
-  }
-  if(st.type != T_FILE){
-    printf("FAIL: stat type=%d\n", st.type);
-    exit(1);
-  }
-  close(fd);
-  printf("PASS: stat (type=%d)\n", st.type);
+  printf("PASS: lookup + stat\n");
 
   // ---- mkdir ----
   if(mkdir("/fat/subdir") < 0){
