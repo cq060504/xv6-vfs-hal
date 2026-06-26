@@ -249,6 +249,7 @@ UPROGS=\
 	$U/_dorphan\
 	$U/_mount\
 	$U/_umount\
+	$U/_fat32test\
 
 fs.img: mkfs/mkfs README $(UPROGS) ext2.img user/hello.c demo.sh
 	mkfs/mkfs fs.img README $(UPROGS) user/hello.c demo.sh

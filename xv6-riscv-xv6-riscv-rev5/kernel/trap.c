@@ -216,6 +216,9 @@ devintr()
 #if defined(VIRTIO1_IRQ) && VIRTIO_NDISK > 1
               || irq == VIRTIO1_IRQ
 #endif
+#if defined(VIRTIO2_IRQ) && VIRTIO_NDISK > 2
+              || irq == VIRTIO2_IRQ
+#endif
     ){
       virtio_disk_intr();
     } else if(irq){
