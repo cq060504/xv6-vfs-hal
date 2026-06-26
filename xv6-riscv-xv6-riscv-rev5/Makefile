@@ -4,7 +4,13 @@ U=user
 # Target architecture, default riscv, optional loongarch
 ARCH ?= riscv
 HAL = hal
+# LoongArch uses a single ramdisk (VIRTIO_NDISK=1).
+# RISC-V uses three virtio disks: xv6(1) + ext2(2) + fat32(3).
+ifeq ($(ARCH),loongarch)
 VIRTIO_NDISK ?= 1
+else
+VIRTIO_NDISK ?= 3
+endif
 
 # Platform-independent kernel objects
 K_OBJS = \
@@ -29,7 +35,8 @@ K_OBJS = \
   $K/sysfile.o \
   $K/vfs.o \
   $K/xv6fs.o \
-  $K/ext2.o
+  $K/ext2.o \
+  $K/fat32.o
 
 # Platform-specific objects (compiled from hal/$(ARCH)/)
 ARCH_OBJS = \
@@ -260,6 +267,10 @@ else
 endif
 	mkfs.ext2 -F -b 1024 ext2.img
 
+fat32.img:
+	dd if=/dev/zero of=fat32.img bs=1M count=10
+	mkfs.fat -F 32 fat32.img
+
 clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*/*.o */*.d */*.asm */*.sym \
@@ -288,13 +299,17 @@ QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nogr
 QEMUOPTS += -global virtio-mmio.force-legacy=false
 QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
-ifeq ($(VIRTIO_NDISK),2)
-QEMUOPTS += -drive file=fs1.img,if=none,format=raw,id=x1
-QEMUOPTS += -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1
-endif
+	ifneq ($(filter 2 3,$(VIRTIO_NDISK)),)
+	QEMUOPTS += -drive file=ext2.img,if=none,format=raw,id=x1
+	QEMUOPTS += -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1
+	endif
+	ifeq ($(VIRTIO_NDISK),3)
+	QEMUOPTS += -drive file=fat32.img,if=none,format=raw,id=x2
+	QEMUOPTS += -device virtio-blk-device,drive=x2,bus=virtio-mmio-bus.2
+	endif
 endif
 
-qemu: check-qemu-version $K/kernel $(if $(filter riscv,$(ARCH)),fs.img $(if $(filter 2,$(VIRTIO_NDISK)),fs1.img))
+qemu: check-qemu-version $K/kernel $(if $(filter riscv,$(ARCH)),fs.img $(if $(filter 2,$(VIRTIO_NDISK)),ext2.img) $(if $(filter 3,$(VIRTIO_NDISK)),fat32.img))
 ifeq ($(ARCH),loongarch)
 	$(OBJCOPY) -O binary $K/kernel $K/kernel.bin
 	$(QEMU) $(QEMUOPTS) -bios $K/kernel.bin
@@ -305,7 +320,7 @@ endif
 .gdbinit: .gdbinit.tmpl-riscv
 	sed "s/:1234/:$(GDBPORT)/" < $^ > $@
 
-qemu-gdb: $K/kernel .gdbinit $(if $(filter riscv,$(ARCH)),fs.img $(if $(filter 2,$(VIRTIO_NDISK)),fs1.img))
+qemu-gdb: $K/kernel .gdbinit $(if $(filter riscv,$(ARCH)),fs.img $(if $(filter 2,$(VIRTIO_NDISK)),ext2.img) $(if $(filter 3,$(VIRTIO_NDISK)),fat32.img))
 	@echo "*** Now run 'gdb' in another window." 1>&2
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
 

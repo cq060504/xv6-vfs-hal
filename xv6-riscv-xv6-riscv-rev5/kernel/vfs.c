@@ -32,6 +32,7 @@ vfs_init(void)
   nfstype = 0;
   vfs_register(xv6fs_mount, "xv6fs");
   vfs_register(ext2_mount, "ext2");
+  vfs_register(fat32_mount, "fat32");
 }
 
 void

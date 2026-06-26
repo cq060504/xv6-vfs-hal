@@ -107,5 +107,6 @@ int           vfs_truncate(struct vnode*);
 void          vfs_register(struct mount* (*)(uint), char*);
 struct mount* xv6fs_mount(uint);
 struct mount* ext2_mount(uint);
+struct mount* fat32_mount(uint);
 
 #endif

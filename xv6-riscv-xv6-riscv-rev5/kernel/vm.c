@@ -54,6 +54,9 @@ kvmmake(void)
 #if defined(VIRTIO1) && VIRTIO_NDISK > 1
   kvmmap(kpgtbl, VIRTIO1, VIRTIO1, PGSIZE, PTE_R | PTE_W);
 #endif
+#if defined(VIRTIO2) && VIRTIO_NDISK > 2
+  kvmmap(kpgtbl, VIRTIO2, VIRTIO2, PGSIZE, PTE_R | PTE_W);
+#endif
 
   // map kernel text executable and read-only.
   kvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
