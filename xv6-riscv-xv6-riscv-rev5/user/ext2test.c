@@ -591,7 +591,7 @@ static int test_l4_large_file(void) {
 int main(int argc, char *argv[]) {
   g_pass = g_fail = 0;
 
-  printf("\n========== ext2test3: VFS/ext2 综合测试 ==========\n");
+  printf("\n========== ext2test: VFS/ext2 综合测试 ==========\n");
 
   do_test("L1 — mount/umount 体系", test_l1_mount_cycle);
   do_test("L1 — mount 错误路径", test_l1_mount_errors);
@@ -610,5 +610,5 @@ int main(int argc, char *argv[]) {
   do_test("L4 — large file (indirect)", test_l4_large_file);
 
   printf("\n========== %d passed, %d failed ==========\n\n", g_pass, g_fail);
-  return g_fail > 0 ? 1 : 0;
+  exit(g_fail > 0 ? 1 : 0);
 }
