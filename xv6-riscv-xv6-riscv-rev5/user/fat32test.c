@@ -15,8 +15,7 @@ main(void)
 
   printf("fat32test: starting\n");
 
-  // ---- mount ----
-  mkdir("/fat");
+  // ---- mount ---- (/fat already created by init.c)
   if(mount("/fat", 3, "fat32") < 0){
     printf("FAIL: mount /fat 3 fat32\n");
     exit(1);
