@@ -1,7 +1,3 @@
-# demo.sh — xv6 VFS/ext2 功能演示脚本
-# 运行方式: cat demo.sh | sh   （与官方 cmds.sh 一致）
-# 演示流程：官方测试 test1/test2 → ext2 综合测试 ext2test
-# 注：需在启动后手动挂载 ext2
 
 echo "========================================"
 echo "  xv6 VFS/ext2 功能演示"
@@ -19,7 +15,7 @@ cat hello.c > /tests/hello.c
 echo "  挂载 ext2 文件系统..."
 mkdir /mnt
 mount /mnt 1 ext2
-
+cat hello.c > /mnt/hello.c
 echo ""
 echo "========================================"
 echo "[Phase 2] 官方测试 — 跨文件系统拷贝"

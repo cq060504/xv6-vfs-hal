@@ -24,7 +24,7 @@ main(void)
   dup(0);  // stderr
 
   // Prepare mount points and test files
-  mkdir("/mnt");
+  
   mkdir("/fat");
   int fd = open("/hello.c", O_WRONLY | O_CREATE);
   if(fd >= 0){ write(fd, "hello from xv6fs\n", 17); close(fd); }
