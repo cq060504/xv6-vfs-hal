@@ -184,7 +184,8 @@ fat32test
 xv6-vfs-hal/
 ├── README.md                              ← 本文件
 ├── xv6-riscv-xv6-riscv-rev5/              ← 主代码目录
-│   ├── DESIGN_DOC.md                      ← 详细设计文档（9章）
+│   ├── xv6-vfs-hal-code.patch             ← 完整变更补丁（与原始 xv6-riscv 的 diff）
+│   ├── DESIGN_DOC.pdf                     ← 详细设计文档（9章）
 │   ├── 操作指南.md                        ← Docker 环境搭建与测试流程
 │   ├── doc/
 │   │   ├── 演示视频.mp4                   ← 项目演示视频
@@ -224,6 +225,19 @@ xv6-vfs-hal/
 | 用户测试           | `user/ext2test.c` 等                  | ~700 行             |
 | **合计新增** |                                         | **~6200 行** |
 | xv6-rev5 基线      |                                         | ~10000 行           |
+
+---
+
+## 变更补丁
+
+项目根目录下的 `xv6-vfs-hal-code.patch` 是本项目相对原始 **xv6-riscv rev5** 的完整差异补丁（约 9000 行），由 `git diff` 生成，精确记录了每一处代码变更。它包含以下几类内容：
+
+- **HAL 硬件抽象层** — hal/riscv/ 文件搬移 + hal/loongarch/ 全新移植 + 内核全局符号改名（约 3000 行 diff）
+- **VFS 虚拟文件系统** — vfs.c/vfs.h 核心 + xv6fs.c 胶水层 + 系统调用适配（约 600 行新增）
+- **ext2 文件系统** — ext2.c/h 完整读写实现（约 1200 行新增）
+- **FAT32 文件系统** — fat32.c/h 紧凑实现（约 370 行新增）
+- **构建系统** — Makefile 双架构编译 + 链接脚本（约 200 行修改）
+- **用户态测试** — ext2test.c、fat32test.c、test1.c/test2.c（约 700 行新增）
 
 ---
 
