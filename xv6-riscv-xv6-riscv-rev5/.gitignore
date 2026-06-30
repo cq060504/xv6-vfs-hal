@@ -9,6 +9,7 @@ _*
 *.out
 *.toc
 *.pdf
+!DESIGN_DOC.pdf
 *.fdb_latexmk
 *.txt
 *.html
