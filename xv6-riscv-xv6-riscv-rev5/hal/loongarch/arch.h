@@ -17,7 +17,7 @@
 #define CSR_PRMD    0x1    // Previous Mode: PPLV[1:0], PIE[2]
 #define CSR_ECFG    0x4    // Exception Config: LIE[12:0], VS[18:16]
 #define CSR_ESTAT   0x5    // Exception Status: IS[12:0], Ecode[21:16]
-#define CSR_ERA     0x6    // Exception Return Address (= sepc)
+#define CSR_ERA     0x6    // Exception Return Address (= sepc)git
 #define CSR_BADV    0x7    // Bad Virtual Address (= stval)
 #define CSR_EENTRY  0xC    // Exception Entry Point (= stvec)
 #define CSR_TLBIDX  0x10   // TLB Index

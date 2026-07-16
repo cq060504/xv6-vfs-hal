@@ -30,6 +30,7 @@ RUN apt-get update && \
     perl \
     git \
     build-essential \
+    dosfstools \
     vim \
     xxd \
     && rm -rf /var/lib/apt/lists/*

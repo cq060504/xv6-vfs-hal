@@ -39,6 +39,12 @@
 #define KERNBASE 0x1C000000L
 #define PHYSTOP (0x00400000L + 124*1024*1024)
 
+// QEMU loader-backed RAM disks. This region is above PHYSTOP and the kernel
+// stacks, so kalloc cannot overwrite it. Three 16 MiB windows end below the
+// 256 MiB low-RAM boundary.
+#define RAMDISK_BASE   0x09000000L
+#define RAMDISK_STRIDE (16*1024*1024L)
+
 // LoongArch DMW0 (VSEG=0, PLV=PLV0) identity-maps ALL VA[63:60]=0 -> PA=VA.
 // This covers our entire 39-bit VA space. We exploit this by placing kernel
 // objects at physical addresses where they actually exist:

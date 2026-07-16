@@ -1,5 +1,34 @@
 # xv6-riscv HAL 跨平台移植项目
 
+## 前言：赛题背景
+
+xv6-riscv是一个由MIT开发的教学操作系统，运行于RISC-V平台，其标准版只支持一个文件系统和一个CPU平台，本项目的任务是扩充xv6-riscv操作系统的第5版，为其增加虚拟文件系统（VFS）和硬件抽象层（HAL）功能。要求同时支持xv6、ext2、fat32文件系统以及RISC-V、LoongArch平台，且增加的代码尽量少、系统运行稳定，目标是持续打造一个设计精巧的小型教学操作系统。鼓励利用AI工具和agent进行开发，同时应保证操作系统运行稳定。
+
+### 赛题任务
+1.同时支持xv6、ext2和fat32文件系统；
+2.同时支持RISC-V和LoongArch平台；
+3.在上述两个平台通过xv6-riscv第5版自带的测例；
+4.完成指定的虚拟文件系统测试用例（https://github.com/yanjun-wen/xv6-extend-vfs/tree/main/tests）；
+5.提交所开发最终版与原xv6-riscv第5版之间的diff文件。
+
+### 赛题特征
+1.使用C语言实现；
+2.目标平台是qemu-riscv和qemu-loongarch模拟器。
+
+### 参考资料
+xv6-riscv第5版源码：https://github.com/mit-pdos/xv6-riscv/releases/tag/xv6-riscv-rev5
+参考项目1：2025年操作系统全国赛内核赛道"静春山"团队的xv6项目：https://gitlab.eduxiji.net/educg-group-36002-2710490/T202510558995330-264
+参考项目2：2025年操作系统全国赛内核赛道"RuOK"团队的xv6项目：https://gitlab.eduxiji.net/educg-group-36002-2710490/T202510486995232-2402
+xv6-riscv-book：https://github.com/mit-pdos/xv6-riscv-book
+The RISC-V Instruction Set Manual：https://riscv.org/technical/specifications/
+
+### 评审要点
+设计精巧度：占20%，根据文档和diff文件度量；
+功能实现完成度：占20%；
+运行稳定性：占20%；
+文档质量和完整性：占20%；
+Demo质量：占20%。
+
 ## 项目概述
 
 本项目的目标是为 xv6-riscv 第5版引入**硬件抽象层（HAL）**，使其能够在不同的处理器架构（RISC-V、LoongArch 等）上运行，而无需修改内核通用代码。
@@ -661,30 +690,31 @@ kernel.bin = 2MB + 0.5MB + 0.5MB + 0.5MB = 3.5MB ✓
 5. bio.c: VIRTIO_NDISK=2 允许 dev=2
 6. init.c: NDISK=2 时 mount fat32 on /fat with dev=2
 
-### 实验结论（2026-06-26）
+### 最终实现（2026-07-16）
 
-已尝试方案 B，**kernel.bin = 4.26MB，超过 QEMU ROM 限制（~4MB）**：
+LoongArch 不再把文件系统镜像链接进 `kernel.bin`。QEMU generic loader
+在启动前将 `fs.img`、`ext2.img`、`fat32.img` 分别加载到三个保留的
+16 MiB 低端 RAM 窗口，HAL RAM disk 直接在这些窗口上完成同步块 I/O。
+
+实际结果：
 
 ```
-fs.img (xv6 2MB + ext2 1MB) = 3MB
-fat32.img = 1MB
-kernel.bin = 4264512 bytes → Could not load ROM image
+kernel.bin = 119328 bytes
+fs.img     = 3096576 bytes  @ 0x09000000 (dev=1)
+ext2.img   = 1048576 bytes  @ 0x0a000000 (dev=2)
+fat32.img  = 10485760 bytes @ 0x0b000000 (dev=3)
 ```
 
-无法通过简单参数调优解决。要让 LoongArch 支持 FAT32，需要：
-- 将 ext2 减小到 512KB（风险：ext2test2 写文件空间不足）
-- 将 fat32 减小到 512KB（风险：mkfs.fat 最小限制）
-- 或为 LoongArch 实现 PCI virtio 驱动（用 `-drive` 替代 ramdisk）
+这使 BIOS 只加载纯内核，彻底绕过约 4 MiB ROM 上限，也删除了旧实现的
+镜像页数组、`kalloc()` 循环和整镜像二次复制。LoongArch `fat32test` 已
+完成 6/6 项验证。
 
-**结论：LoongArch FAT32 暂不可行，保持 RISC-V only。**
-
-### 最终状态（2026-06-26）
+### 最终状态（2026-07-16）
 
 | 平台 | xv6fs | ext2 | fat32 |
 |------|-------|------|-------|
 | RISC-V | ✅ | ✅ | ✅ |
-| LoongArch | ✅ | ✅ | ❌ (ROM 限制) |
+| LoongArch | ✅ | ✅ | ✅ |
 
 RISC-V 测试：`fat32test` 6/6 ALL PASSED。
-LoongArch：受 QEMU -bios ROM 加载上限（~4MB）限制，无法同时嵌入三个文件系统镜像。
-不修改 ext2test 的前提下，LoongArch FAT32 不可行。
+LoongArch 测试：`fat32test` 6/6 ALL PASSED。

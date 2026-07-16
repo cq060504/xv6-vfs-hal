@@ -1,5 +1,5 @@
 // LoongArch EIOINTC interrupt controller driver.
-// Manages external I/O interrupts (UART, virtio, etc.).
+// Manages external I/O interrupts. Loader-backed RAM disks need no IRQ.
 // Timer interrupts (ESTAT.IS[11]) are local to each CPU core and
 // do not go through EIOINTC.
 //
@@ -19,21 +19,17 @@
 #define EIOINTC_IRQ_EN(irq)  (*(volatile uint32*)(EIOINTC + 0x0080 + ((irq)/32)*4))
 #define EIOINTC_IPMAP(irq)   (*(volatile uint8*)(EIOINTC + 0x0400 + (irq)))
 
-// External interrupt vector numbers.
-#define UART_VECTOR   31
-#define VIRTIO_VECTOR 32
+// External interrupt vector number. RAM disks complete synchronously.
+#define UART_VECTOR 31
 
 // Global interrupt controller initialization.
 void
 hal_irq_init(void)
 {
-  // Enable specific IRQ lines (UART + virtio).
-  EIOINTC_IRQ_EN(UART_VECTOR)   |= (1 << (UART_VECTOR % 32));
-  EIOINTC_IRQ_EN(VIRTIO_VECTOR) |= (1 << (VIRTIO_VECTOR % 32));
+  // Enable and route the UART interrupt to core 0.
+  EIOINTC_IRQ_EN(UART_VECTOR) |= (1 << (UART_VECTOR % 32));
 
-  // Route UART and virtio interrupts to core 0.
-  EIOINTC_IPMAP(UART_VECTOR)   = 0x1;  // core 0
-  EIOINTC_IPMAP(VIRTIO_VECTOR) = 0x1;  // core 0
+  EIOINTC_IPMAP(UART_VECTOR) = 0x1;
 }
 
 // Per-core interrupt controller initialization.

@@ -274,16 +274,16 @@ static void fumount(struct mount *mp){
 }
 struct mount* fat32_mount(uint dev){
   struct buf *bp=bread(dev,0); if(!bp) return 0;
-  struct fat32_bpb *bpb=(struct fat32_bpb*)bp->data;
-  ushort bps=bpb->BPB_BytsPerSec;
-  if(bps!=512||bpb->BPB_FATSz32==0){brelse(bp);return 0;}
+  struct fat32_bpb bpb; memmove(&bpb,bp->data,sizeof(bpb));
+  ushort bps=bpb.BPB_BytsPerSec;
+  if(bps!=512||bpb.BPB_FATSz32==0){brelse(bp);return 0;}
   if(bp->data[510]!=0x55||bp->data[511]!=0xAA){brelse(bp);return 0;}
   brelse(bp);
   struct fat32_mount *fm=kalloc(); if(!fm) return 0; memset(fm,0,sizeof(*fm));
   fm->dev=dev; fm->bps=bps; fm->spb=BSIZE/bps;
-  fm->sec_per_clus=bpb->BPB_SecPerClus;fm->rsvd_sec_cnt=bpb->BPB_RsvdSecCnt;
-  fm->num_fats=bpb->BPB_NumFATs;fm->fat_sz=bpb->BPB_FATSz32;fm->root_clus=bpb->BPB_RootClus;
-  uint ts=bpb->BPB_TotSec16?bpb->BPB_TotSec16:bpb->BPB_TotSec32;
+  fm->sec_per_clus=bpb.BPB_SecPerClus;fm->rsvd_sec_cnt=bpb.BPB_RsvdSecCnt;
+  fm->num_fats=bpb.BPB_NumFATs;fm->fat_sz=bpb.BPB_FATSz32;fm->root_clus=bpb.BPB_RootClus;
+  uint ts=bpb.BPB_TotSec16?bpb.BPB_TotSec16:bpb.BPB_TotSec32;
   uint ds=ts-fm->rsvd_sec_cnt-(fm->num_fats*fm->fat_sz);
   fm->tot_clus=ds/fm->sec_per_clus; fm->first_data_sec=fm->rsvd_sec_cnt+(fm->num_fats*fm->fat_sz);
   fm->free_count=0xFFFFFFFF; initsleeplock(&fm->lock,"fat32");

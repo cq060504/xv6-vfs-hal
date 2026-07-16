@@ -4,13 +4,9 @@ U=user
 # Target architecture, default riscv, optional loongarch
 ARCH ?= riscv
 HAL = hal
-# LoongArch uses a single ramdisk (VIRTIO_NDISK=1).
-# RISC-V uses three virtio disks: xv6(1) + ext2(2) + fat32(3).
-ifeq ($(ARCH),loongarch)
-VIRTIO_NDISK ?= 1
-else
+# Both platforms expose three block devices: xv6(1) + ext2(2) + fat32(3).
+# LoongArch uses QEMU loader-backed RAM disks instead of virtio hardware.
 VIRTIO_NDISK ?= 3
-endif
 
 # Platform-independent kernel objects
 K_OBJS = \
@@ -147,21 +143,14 @@ endif
 
 LDFLAGS = -z max-page-size=4096
 
-LOONGARCH_FS_OBJS = $(if $(filter loongarch,$(ARCH)),$K/fs_img.o $(if $(filter 2,$(VIRTIO_NDISK)),$K/fs1_img.o))
-
-$K/kernel: $(OBJS) $(HAL)/$(ARCH)/kernel.ld $(LOONGARCH_FS_OBJS)
-	$(LD) $(LDFLAGS) -T $(HAL)/$(ARCH)/kernel.ld -o $K/kernel $(OBJS) $(LOONGARCH_FS_OBJS)
+$K/kernel: $(OBJS) $(HAL)/$(ARCH)/kernel.ld
+	$(LD) $(LDFLAGS) -T $(HAL)/$(ARCH)/kernel.ld -o $K/kernel $(OBJS)
 	$(OBJDUMP) -S $K/kernel > $K/kernel.asm
 	$(OBJDUMP) -t $K/kernel | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $K/kernel.sym
 
-# LoongArch: embed filesystem image as a raw binary object linked into the kernel.
-# This creates symbols _binary_fs_img_start, _binary_fs_img_end, _binary_fs_img_size.
 ifeq ($(ARCH),loongarch)
-$K/fs_img.o: fs.img
-	$(OBJCOPY) -I binary -O elf64-loongarch -B loongarch64 $< $@
-
-$K/fs1_img.o: fs1.img
-	$(OBJCOPY) -I binary -O elf64-loongarch -B loongarch64 $< $@
+$K/kernel.bin: $K/kernel
+	$(OBJCOPY) -O binary $< $@
 endif
 
 # Generic rules: compile kernel/ .c -> .o
@@ -276,7 +265,7 @@ clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*/*.o */*.d */*.asm */*.sym \
 	hal/*/*.o hal/*/*.d hal/*/*.asm hal/*/*.sym \
-	$K/kernel fs.img fs1.img ext2.img \
+	$K/kernel $K/kernel.bin fs.img fs1.img ext2.img \
 	mkfs/mkfs .gdbinit \
         $U/usys.S \
 	$(UPROGS)
@@ -292,9 +281,12 @@ CPUS := 3
 endif
 
 ifeq ($(ARCH),loongarch)
-# LoongArch QEMU: -bios with raw binary (not -kernel), requires >= 1G RAM
+# Keep the BIOS image small; load writable file-system images into reserved RAM.
 QEMUOPTS = -machine virt -cpu la464 -m 1G -smp $(CPUS) -nographic
 QEMUOPTS += -nic none
+QEMUOPTS += -device loader,file=fs.img,addr=0x09000000,force-raw=on
+QEMUOPTS += -device loader,file=ext2.img,addr=0x0a000000,force-raw=on
+QEMUOPTS += -device loader,file=fat32.img,addr=0x0b000000,force-raw=on
 else
 QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
 QEMUOPTS += -global virtio-mmio.force-legacy=false
@@ -310,9 +302,24 @@ QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 	endif
 endif
 
-qemu: check-qemu-version $K/kernel $(if $(filter riscv,$(ARCH)),fs.img $(if $(filter 2,$(VIRTIO_NDISK)),ext2.img) $(if $(filter 3,$(VIRTIO_NDISK)),fat32.img))
 ifeq ($(ARCH),loongarch)
-	$(OBJCOPY) -O binary $K/kernel $K/kernel.bin
+QEMU_DEPS = $K/kernel.bin check-loongarch-images
+else
+QEMU_DEPS = $K/kernel fs.img $(if $(filter 2 3,$(VIRTIO_NDISK)),ext2.img) $(if $(filter 3,$(VIRTIO_NDISK)),fat32.img)
+endif
+
+.PHONY: check-loongarch-images
+check-loongarch-images: fs.img ext2.img fat32.img
+	@for image in $^; do \
+		size=$$(wc -c < $$image); \
+		if [ $$size -gt 16777216 ]; then \
+			echo "ERROR: $$image exceeds its 16 MiB LoongArch RAM-disk window"; \
+			exit 1; \
+		fi; \
+	done
+
+qemu: check-qemu-version $(QEMU_DEPS)
+ifeq ($(ARCH),loongarch)
 	$(QEMU) $(QEMUOPTS) -bios $K/kernel.bin
 else
 	$(QEMU) $(QEMUOPTS)
@@ -321,9 +328,13 @@ endif
 .gdbinit: .gdbinit.tmpl-riscv
 	sed "s/:1234/:$(GDBPORT)/" < $^ > $@
 
-qemu-gdb: $K/kernel .gdbinit $(if $(filter riscv,$(ARCH)),fs.img $(if $(filter 2,$(VIRTIO_NDISK)),ext2.img) $(if $(filter 3,$(VIRTIO_NDISK)),fat32.img))
+qemu-gdb: $(QEMU_DEPS) .gdbinit
 	@echo "*** Now run 'gdb' in another window." 1>&2
+ifeq ($(ARCH),loongarch)
+	$(QEMU) $(QEMUOPTS) -bios $K/kernel.bin -S $(QEMUGDB)
+else
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
+endif
 
 print-gdbport:
 	@echo $(GDBPORT)
