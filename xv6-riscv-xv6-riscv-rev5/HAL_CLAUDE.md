@@ -700,14 +700,19 @@ LoongArch 不再把文件系统镜像链接进 `kernel.bin`。QEMU generic loade
 
 ```
 kernel.bin = 119328 bytes
-fs.img     = 3096576 bytes  @ 0x09000000 (dev=1)
-ext2.img   = 1048576 bytes  @ 0x0a000000 (dev=2)
+fs.img     = 2048000 bytes  @ 0x09000000 (dev=1)
+ext2.img   = 8388608 bytes  @ 0x0a000000 (dev=2)
 fat32.img  = 10485760 bytes @ 0x0b000000 (dev=3)
 ```
 
 这使 BIOS 只加载纯内核，彻底绕过约 4 MiB ROM 上限，也删除了旧实现的
 镜像页数组、`kalloc()` 循环和整镜像二次复制。LoongArch `fat32test` 已
 完成 6/6 项验证。
+
+2026-07-18 补充：三个设备现在严格一一对应三个独立文件系统：`dev=1`
+只包含 xv6fs，`dev=2` 从块 0 开始保存完整 `ext2.img`，`dev=3` 保存
+`fat32.img`。ext2 后端不再包含 `FSSIZE` 偏移兼容层。`ext2.img` 固定为
+8 MiB，恰好对应当前 ext2 实现支持的单个 8192 块组（块大小 1 KiB）。
 
 ### 最终状态（2026-07-16）
 

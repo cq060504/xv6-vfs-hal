@@ -8,6 +8,7 @@
 #include "kernel/fcntl.h"
 
 #define MNT "/mnt"
+#define EXT2_DEV 2
 #define HELLO_SRC "/hello.c"
 #define HELLO_MNT "/mnt/hello.c"
 #define SUBDIR  "/mnt/subdir"
@@ -57,10 +58,10 @@ static void test_mount(void) {
     // /mnt may already exist
   }
 
-  if (mount(MNT, 1, "ext2") < 0) {
-    fail("mount /mnt 1 ext2");
+  if (mount(MNT, EXT2_DEV, "ext2") < 0) {
+    fail("mount /mnt 2 ext2");
   } else {
-    ok("mount /mnt 1 ext2");
+    ok("mount /mnt 2 ext2");
   }
 }
 
@@ -200,7 +201,7 @@ static void test_remount_persist(void) {
   if (umount(MNT) < 0) { printf("%s %d\n", __func__, __LINE__); fail("umount /mnt"); return; }
   ok("umount /mnt");
 
-  if (mount(MNT, 1, "ext2") < 0) { fail("remount /mnt"); return; }
+  if (mount(MNT, EXT2_DEV, "ext2") < 0) { fail("remount /mnt"); return; }
   ok("remount /mnt");
 
   fd = open("/mnt/persist_test", O_RDONLY);

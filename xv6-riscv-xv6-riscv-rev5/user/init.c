@@ -25,14 +25,15 @@ main(void)
 
   // Prepare mount points and test files
   
+  mkdir("/mnt");
   mkdir("/fat");
   int fd = open("/hello.c", O_WRONLY | O_CREATE);
   if(fd >= 0){ write(fd, "hello from xv6fs\n", 17); close(fd); }
 
   // Start a shell.  Manually run commands to test:
   //   usertests -q           — xv6 usertests
-  //   ext2test2; ext2test1   — ext2 tests (order matters)
-  //   ext2test3              — ext2 L4 test (may fail)
+  //   mount /mnt 2 ext2; test2; test1  — cross-file-system tests
+  //   ext2test              — ext2 tests on dev 2
   //   fat32test              — fat32 test
   for(;;){
     printf("init: starting sh\n");

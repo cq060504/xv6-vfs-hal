@@ -240,9 +240,8 @@ UPROGS=\
 	$U/_umount\
 	$U/_fat32test\
 
-fs.img: mkfs/mkfs README $(UPROGS) ext2.img user/hello.c demo.sh
+fs.img: mkfs/mkfs README $(UPROGS) user/hello.c demo.sh
 	mkfs/mkfs fs.img README $(UPROGS) user/hello.c demo.sh
-	cat ext2.img >> fs.img
 
 -include kernel/*.d user/*.d hal/*/*.d
 
@@ -250,11 +249,8 @@ fs1.img: fs.img
 	cp fs.img fs1.img
 
 ext2.img:
-ifeq ($(ARCH),loongarch)
-	dd if=/dev/zero of=ext2.img bs=1M count=1
-else
-	dd if=/dev/zero of=ext2.img bs=1M count=10
-endif
+	# The ext2 backend supports one 8192-block group with 1 KiB blocks.
+	dd if=/dev/zero of=ext2.img bs=1M count=8
 	mkfs.ext2 -F -b 1024 ext2.img
 
 fat32.img:
@@ -265,7 +261,7 @@ clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*/*.o */*.d */*.asm */*.sym \
 	hal/*/*.o hal/*/*.d hal/*/*.asm hal/*/*.sym \
-	$K/kernel $K/kernel.bin fs.img fs1.img ext2.img \
+	$K/kernel $K/kernel.bin fs.img fs1.img ext2.img fat32.img \
 	mkfs/mkfs .gdbinit \
         $U/usys.S \
 	$(UPROGS)

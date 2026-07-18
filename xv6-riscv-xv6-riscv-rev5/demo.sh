@@ -14,7 +14,7 @@ cat hello.c > /tests/hello.c
 
 echo "  挂载 ext2 文件系统..."
 mkdir /mnt
-mount /mnt 1 ext2
+mount /mnt 2 ext2
 cat hello.c > /mnt/hello.c
 echo ""
 echo "========================================"
