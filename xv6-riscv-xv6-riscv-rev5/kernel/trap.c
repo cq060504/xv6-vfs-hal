@@ -112,7 +112,7 @@ prepare_return(void)
   // set up trapframe values that uservec will need when
   // the process next traps into the kernel.
   p->trapframe->kernel_satp = hal_read_satp();         // kernel page table
-  p->trapframe->kernel_sp = p->kstack + PGSIZE; // process's kernel stack
+  p->trapframe->kernel_sp = p->kstack + 2 * PGSIZE; // process's kernel stack(fix:kernel assign 2 pages)
   p->trapframe->kernel_trap = (uint64)usertrap;
   p->trapframe->kernel_hartid = hal_get_hartid();      // hartid for cpuid()
 

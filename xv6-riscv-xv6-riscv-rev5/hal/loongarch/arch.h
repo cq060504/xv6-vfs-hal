@@ -26,6 +26,7 @@
 #define CSR_TLBELO1 0x13   // TLB Entry Low 1
 #define CSR_PGDL    0x19   // Page Table Base (low half addr space)
 #define CSR_PGDH    0x1A   // Page Table Base (high half addr space)
+#define CSR_PGD     0x1B   // Selected page table base for the faulting VA
 #define CSR_RVACFG  0x1F   // Reduced Virtual Address Configuration
 #define CSR_CPUID   0x20   // Core ID (= mhartid)
 #define CSR_TCFG    0x41   // Timer Config: enable + period
@@ -110,7 +111,7 @@ static inline uint64 r_crmd(void) {
   return x;
 }
 static inline void w_crmd(uint64 x) {
-  asm volatile("csrwr %0, 0x0" : : "r"(x));
+  asm volatile("csrwr %0, 0x0" : "+r"(x));
 }
 
 // --- PRMD (0x1): Previous Mode Register ---
@@ -120,7 +121,7 @@ static inline uint64 r_prmd(void) {
   return x;
 }
 static inline void w_prmd(uint64 x) {
-  asm volatile("csrwr %0, 0x1" : : "r"(x));
+  asm volatile("csrwr %0, 0x1" : "+r"(x));
 }
 
 // --- ECFG (0x4): Exception Configuration ---
@@ -130,7 +131,7 @@ static inline uint64 r_ecfg(void) {
   return x;
 }
 static inline void w_ecfg(uint64 x) {
-  asm volatile("csrwr %0, 0x4" : : "r"(x));
+  asm volatile("csrwr %0, 0x4" : "+r"(x));
 }
 
 // --- ESTAT (0x5): Exception Status ---
@@ -147,7 +148,7 @@ static inline uint64 r_era(void) {
   return x;
 }
 static inline void w_era(uint64 x) {
-  asm volatile("csrwr %0, 0x6" : : "r"(x));
+  asm volatile("csrwr %0, 0x6" : "+r"(x));
 }
 
 // --- BADV (0x7): Bad Virtual Address (= stval) ---
@@ -164,7 +165,7 @@ static inline uint64 r_eentry(void) {
   return x;
 }
 static inline void w_eentry(uint64 x) {
-  asm volatile("csrwr %0, 0xC" : : "r"(x));
+  asm volatile("csrwr %0, 0xC" : "+r"(x));
 }
 
 // --- PGDL (0x19): Page Table Base (low half) ---
@@ -174,7 +175,27 @@ static inline uint64 r_pgdl(void) {
   return x;
 }
 static inline void w_pgdl(uint64 x) {
-  asm volatile("csrwr %0, 0x19" : : "r"(x));
+  asm volatile("csrwr %0, 0x19" : "+r"(x));
+}
+
+// --- PGDH (0x1A): Page Table Base (high half) ---
+// Fixed to kernel_pagetable at boot; never changes after that.
+static inline uint64 r_pgdh(void) {
+  uint64 x;
+  asm volatile("csrrd %0, 0x1A" : "=r"(x));
+  return x;
+}
+static inline void w_pgdh(uint64 x) {
+  asm volatile("csrwr %0, 0x1A" : "+r"(x));
+}
+
+// --- PGD (0x1B): Page Table Base (read-only combined) ---
+// Reads PGDL or PGDH automatically based on the faulting address half.
+// Used by TLB refill handler to get the correct root without branching.
+static inline uint64 r_pgd(void) {
+  uint64 x;
+  asm volatile("csrrd %0, 0x1B" : "=r"(x));
+  return x;
 }
 
 // --- CPUID (0x20): Core ID ---
@@ -191,7 +212,7 @@ static inline uint64 r_tcfg(void) {
   return x;
 }
 static inline void w_tcfg(uint64 x) {
-  asm volatile("csrwr %0, 0x41" : : "r"(x));
+  asm volatile("csrwr %0, 0x41" : "+r"(x));
 }
 
 // --- TVAL (0x42): Timer Value (countdown) ---
@@ -201,27 +222,27 @@ static inline uint64 r_tval(void) {
   return x;
 }
 static inline void w_tval(uint64 x) {
-  asm volatile("csrwr %0, 0x42" : : "r"(x));
+  asm volatile("csrwr %0, 0x42" : "+r"(x));
 }
 
 // --- TICLR (0x44): Timer Interrupt Clear ---
 static inline void w_ticlr(uint64 x) {
-  asm volatile("csrwr %0, 0x44" : : "r"(x));
+  asm volatile("csrwr %0, 0x44" : "+r"(x));
 }
 
 // --- RVACFG (0x1F): Reduced Virtual Address Configuration ---
 static inline void w_rvacfg(uint64 x) {
-  asm volatile("csrwr %0, 0x1F" : : "r"(x));
+  asm volatile("csrwr %0, 0x1F" : "+r"(x));
 }
 
 // --- DMW0 (0x180): Direct Mapping Window 0 ---
 static inline void w_dmw0(uint64 x) {
-  asm volatile("csrwr %0, 0x180" : : "r"(x));
+  asm volatile("csrwr %0, 0x180" : "+r"(x));
 }
 
 // --- DMW1 (0x181): Direct Mapping Window 1 ---
 static inline void w_dmw1(uint64 x) {
-  asm volatile("csrwr %0, 0x181" : : "r"(x));
+  asm volatile("csrwr %0, 0x181" : "+r"(x));
 }
 
 // ============================================================
@@ -369,7 +390,8 @@ typedef uint64 *pagetable_t;
 // still supports a wider VA, but the TLB refill path rejects VAs >= MAXVA.
 #define MAXVA (1ULL << 38)
 
-// PGDL holds the physical page table base (no mode bits like satp)
+// PGDL/PGDH both hold the physical page table base (no mode bits).
+// Unlike RISC-V satp, LoongArch page-table CSRs are pure PA pointers.
 #define MAKE_SATP(pagetable) ((uint64)(pagetable))
 
 // ============================================================

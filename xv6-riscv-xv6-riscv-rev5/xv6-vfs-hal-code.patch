@@ -1945,7 +1945,7 @@ index 0000000..1706fcf
 +// 1FE001E0 -- UART0 (COM1, 16550a)
 +// 1C000000 -- Firmware/BIOS flash (kernel loaded here via -bios)
 +//
-+// DMW0 maps VA[47:36]=0 -> PA[47:36]=0 for kernel direct access.
++// DMW0 maps VA[63:60]=0 -> PA for kernel direct access.
 +// Kernel .data/.bss at VMA 0x00400000 (low RAM).
 +// Kernel .text at VMA 0x1c000000 (flash).
 +//

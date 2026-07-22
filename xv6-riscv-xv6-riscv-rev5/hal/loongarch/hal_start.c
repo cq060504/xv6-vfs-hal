@@ -11,6 +11,9 @@ void main();
 void timerinit();
 void kernelvec();
 
+// Per-CPU boot/scheduler stacks. While a process is running, its CPU's
+// scheduler context is suspended here, so the same page can be reused by the
+// non-returning stack-overflow panic path (see hal_kvec.S).
 __attribute__ ((aligned (16), section(".bootstack"))) char stack0[4096 * NCPU];
 static volatile uint64 boot_done;
 
@@ -87,3 +90,19 @@ void timerinit()
 }
 
 void hal_timer_init(void) { timerinit(); }
+
+// Called from kernelvec (hal_kvec.S) when a kernel stack overflow is detected.
+// sp  = value of sp register at the time of the guard fault.
+// badv = the virtual address that faulted (inside the guard page).
+// Does not return — calls panic() after printing diagnostics.
+void hal_stack_overflow_panic(uint64 sp, uint64 badv) {
+  extern volatile int panicking;
+
+  // The fault may have happened while printf's lock was held. Panic output
+  // must therefore use the existing lock-free panic path.
+  panicking = 1;
+  printf("\nKERNEL STACK OVERFLOW\n");
+  printf("  original sp  = 0x%lx\n", sp);
+  printf("  fault addr   = 0x%lx\n", badv);
+  panic("stack overflow");
+}

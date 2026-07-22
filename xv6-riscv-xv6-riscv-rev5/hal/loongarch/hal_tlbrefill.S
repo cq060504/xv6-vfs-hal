@@ -3,6 +3,10 @@
 # The CPU enters here through CSR.TLBRENTRY with DA=1/PG=0, so low
 # physical addresses are directly reachable. The page-table layout is the
 # four-level 9-9-9-9 scheme configured in kvminithart() via PWCL/PWCH.
+#
+# Accepted virtual addresses:
+#   User:   2*PGSIZE <= VA < MAXVA            (low half, via PGDL)
+#   Kernel: KSTACK_REGION_BOTTOM <= VA < KSTACK_TOP  (high half, via PGDH)
 
 .section .tlbrefill, "ax"
 .balign 4096
@@ -18,27 +22,48 @@ tlb_refill_entry:
         ori     $t0, $t0, 12
         csrwr   $t0, 0x8e
 
-        # Reject non-user VAs before lddir can truncate them to 48 bits.
+        # --- VA validation ---
+        # Accept: user [2*PGSIZE, MAXVA) or kernel [KSTACK_REGION_BOTTOM, KSTACK_TOP)
         csrrd   $t0, 0x89              # TLBRBADV
-        srli.d  $t0, $t0, 38           # MAXVA is 1 << 38
-        bnez    $t0, .Ltlbr_invalid
-        csrrd   $t0, 0x89
+
+        # Kernel addresses have bit 63 set (negative in signed comparison).
+        blt     $t0, $r0, .Lchk_kern
+
+        # User address: must be in [2*PGSIZE, MAXVA).
         srli.d  $t0, $t0, 13           # reject VA < 2*PGSIZE
         beqz    $t0, .Ltlbr_invalid
+        csrrd   $t0, 0x89
+        srli.d  $t0, $t0, 38           # reject VA >= MAXVA
+        bnez    $t0, .Ltlbr_invalid
+        b       .Lrefill_ok
 
-        csrrd   $t0, 0x19              # PGDL: root page-table physical base
+.Lchk_kern:
+        # Kernel address: must be in [KSTACK_REGION_BOTTOM, KSTACK_TOP).
+        # KSTACK_REGION_BOTTOM = 0xFFFFFFFFFFF3F000
+        # KSTACK_TOP          = 0xFFFFFFFFFFFFF000
+        csrwr   $t1, 0x32              # KSave2 = old $t1
+        lu12i.w $t1, -193              # t1 = KSTACK_REGION_BOTTOM
+        bltu    $t0, $t1, .Ltlbr_kern_bad
+        lu12i.w $t1, -1               # t1 = KSTACK_TOP
+        bgeu    $t0, $t1, .Ltlbr_kern_bad
+        csrrd   $t1, 0x32              # restore $t1
+        # fall through to page-table walk
+
+.Lrefill_ok:
+        # PGD selects PGDL or PGDH from TLBRBADV in refill context.
+        csrrd   $t0, 0x1B              # PGD: selected root page-table PA
 
         lddir   $t0, $t0, 3            # Dir2, VA[47:39]
         andi    $t0, $t0, 1
         beqz    $t0, .Ltlbr_invalid
-        csrrd   $t0, 0x19
+        csrrd   $t0, 0x1B
         lddir   $t0, $t0, 3
         addi.d  $t0, $t0, -1
 
         lddir   $t0, $t0, 2            # Dir1, VA[38:30]
         andi    $t0, $t0, 1
         beqz    $t0, .Ltlbr_invalid
-        csrrd   $t0, 0x19
+        csrrd   $t0, 0x1B
         lddir   $t0, $t0, 3
         addi.d  $t0, $t0, -1
         lddir   $t0, $t0, 2
@@ -47,7 +72,7 @@ tlb_refill_entry:
         lddir   $t0, $t0, 1            # Dir0, VA[29:21]
         andi    $t0, $t0, 1
         beqz    $t0, .Ltlbr_invalid
-        csrrd   $t0, 0x19
+        csrrd   $t0, 0x1B
         lddir   $t0, $t0, 3
         addi.d  $t0, $t0, -1
         lddir   $t0, $t0, 2
@@ -61,6 +86,10 @@ tlb_refill_entry:
 
         csrrd   $t0, 0x8b
         ertn
+
+.Ltlbr_kern_bad:
+        csrrd   $t1, 0x32              # restore $t1
+        # fall through to invalid path
 
 .Ltlbr_invalid:
         # Install an invalid matching entry so retry reaches the normal

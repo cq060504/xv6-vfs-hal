@@ -114,22 +114,19 @@ kvminithart()
 
   w_satp(MAKE_SATP(kernel_pagetable));
 
+#ifdef ARCH_loongarch
+  // PGDH stays fixed on kernel_pagetable for the lifetime of the system.
+  // PGDL is switched by userret between user/kernel page tables.
+  w_pgdh(MAKE_SATP(kernel_pagetable));
+#endif
+
   // flush stale entries from the TLB.
   sfence_vma();
 
 #ifdef ARCH_loongarch
-  // On LoongArch, enable the MMU with DMW for kernel direct mapping.
-  //
-  // DMW0 maps VA[47:36]=0 → PA[47:36]=0 (identity mapping, low 64GB).
-  // This covers: RAM, EIOINTC, flash, UART, TRAMPOLINE, kernel stacks —
-  // all kernel addresses. No TLB needed for kernel access.
-  //
-  // DMW format: [3:0]=PLV, [5:4]=MAT, [27:12]=VSEG, [47:36]=PSEG
-  // DMW0: PLV0-only identity map for VA[63:60]=0 → PA=VA.
-  // Covers all kernel code/data/flash/UART/EIOINTC (all < 2^60).
-  // KSTACK is placed at low physical addresses with actual RAM.
-  // TRAMPOLINE is placed at its flash LMA so DMW0 reaches the real code.
-  // TRAPFRAME accessed via KSave1 (kernel VA), not TRAPFRAME VA.
+  // DMW0 (VSEG=0, PLV=PLV0) identity-maps VA[63:60]=0 → PA=VA.
+  // Covers kernel code/data/flash/UART/EIOINTC/TRAMPOLINE — all low VA.
+  // Kernel stacks are at high VA (VA[63]=1) and go through PGDH, not DMW0.
   w_dmw0(0x0000000000000011ULL);  // PLV0, MAT=01(CC), VSEG=0
   w_dmw1(0);
 
@@ -190,8 +187,10 @@ kvminithart()
 pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
-  if(va >= MAXVA)
-    panic("walk");
+  // Accept user virtual addresses and high kernel-stack addresses.
+  // User callers (walkaddr, copyin, etc.) enforce their own MAXVA guard.
+  if(!hal_pagetable_va_valid(va))
+      panic("walk");
 
   for(int level = PT_LEVELS - 1; level > 0; level--) {
     pte_t *pte = &pagetable[PX(level, va)];

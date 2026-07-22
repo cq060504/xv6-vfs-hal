@@ -63,4 +63,13 @@
 // One byte past the largest user address that sbrk may create.
 #define USER_TOP TRAPFRAME
 
+#ifndef __ASSEMBLER__
+// --- Page table walk address validation ---
+// RISC-V kernel stacks live below TRAMPOLINE (< MAXVA), so the walker
+// only needs to accept user-space addresses.
+static inline int hal_pagetable_va_valid(uint64 va) {
+    return va < MAXVA;
+}
+#endif
+
 #endif
