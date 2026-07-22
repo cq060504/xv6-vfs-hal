@@ -9,9 +9,10 @@
 // ---- Core ID ----
 uint64 hal_get_hartid(void);
 
-// ---- Interrupt control (wrappers around CSR) ----
-// Defined as inline in arch.h; these are higher-level wrappers.
-// For compatibility, kernel code may call intr_on/off/get directly.
+// ---- Interrupt control ----
+void hal_intr_on(void);
+void hal_intr_off(void);
+int  hal_intr_get(void);
 
 // ---- Exception state ----
 uint64 hal_read_sstatus(void);

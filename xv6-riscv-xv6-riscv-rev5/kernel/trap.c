@@ -187,10 +187,7 @@ clockintr()
 #ifdef ARCH_loongarch
   // LoongArch QEMU UART RX interrupt may not fire reliably.
   // Poll the UART on each timer tick so keyboard input works.
-  {
-    extern void uartintr(void);
-    uartintr();
-  }
+  hal_console_intr(consoleintr);
 #endif
 }
 

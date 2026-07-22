@@ -1,6 +1,6 @@
 # Context switch for LoongArch64.
 #
-#   void swtch(struct hal_context *old, struct hal_context *new);
+#   void hal_switch(struct hal_context *old, struct hal_context *new);
 #
 # Save current callee-saved registers in *old. Load from *new.
 # a0 = old, a1 = new
@@ -8,10 +8,8 @@
 # LoongArch callee-saved (12 registers):
 #   ra ($r1), sp ($r3), fp/$s9 ($r22), s0-s8 ($r23-$r31)
 
-.globl swtch
 .globl hal_switch
 hal_switch:
-swtch:
         st.d    $ra, $a0, 0
         st.d    $sp, $a0, 8
         st.d    $fp, $a0, 16

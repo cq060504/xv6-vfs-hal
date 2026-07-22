@@ -1,14 +1,12 @@
 # Context switch
 #
-#   void swtch(struct context *old, struct context *new);
+#   void hal_switch(struct hal_context *old, struct hal_context *new);
 #
 # Save current registers in old. Load from new.
 
 
-.globl swtch
 .globl hal_switch
 hal_switch:
-swtch:
         sd ra, 0(a0)
         sd sp, 8(a0)
         sd s0, 16(a0)

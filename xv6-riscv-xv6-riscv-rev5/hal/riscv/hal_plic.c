@@ -10,7 +10,7 @@
 //
 
 void
-plicinit(void)
+hal_irq_init(void)
 {
   // set desired IRQ priorities non-zero (otherwise disabled).
   *(uint32*)(PLIC + UART0_IRQ*4) = 1;
@@ -24,7 +24,7 @@ plicinit(void)
 }
 
 void
-plicinithart(void)
+hal_irq_hart_init(void)
 {
   int hart = cpuid();
 
@@ -45,7 +45,7 @@ plicinithart(void)
 
 // ask the PLIC what interrupt we should serve.
 int
-plic_claim(void)
+hal_irq_claim(void)
 {
   int hart = cpuid();
   int irq = *(uint32*)PLIC_SCLAIM(hart);
@@ -54,14 +54,8 @@ plic_claim(void)
 
 // tell the PLIC we've served this IRQ.
 void
-plic_complete(int irq)
+hal_irq_complete(int irq)
 {
   int hart = cpuid();
   *(uint32*)PLIC_SCLAIM(hart) = irq;
 }
-
-// ---- HAL unified interface wrappers ----
-void hal_irq_init(void)           { plicinit(); }
-void hal_irq_hart_init(void)      { plicinithart(); }
-int  hal_irq_claim(void)          { return plic_claim(); }
-void hal_irq_complete(int irq)    { plic_complete(irq); }

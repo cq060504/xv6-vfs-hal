@@ -6,9 +6,8 @@
 #include "types.h"
 
 void hal_console_init(void);
-void hal_putchar_sync(int c);
+void hal_console_write(char buf[], int n);
 void hal_putchar(int c);
-int  hal_getchar(void);
 void hal_console_intr(void (*handler)(int));
 
 #endif

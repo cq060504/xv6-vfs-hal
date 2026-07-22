@@ -43,7 +43,7 @@ extern volatile int panicking; // from printf.c
 extern volatile int panicked;  // from printf.c
 
 void
-uartinit(void)
+hal_console_init(void)
 {
   // disable interrupts.
   WriteReg(IER, 0x00);
@@ -74,7 +74,7 @@ uartinit(void)
 // uart is busy, so it cannot be called from
 // interrupts, only from write() system calls.
 void
-uartwrite(char buf[], int n)
+hal_console_write(char buf[], int n)
 {
   acquire(&tx_lock);
 
@@ -100,7 +100,7 @@ uartwrite(char buf[], int n)
 // to echo characters. it spins waiting for the uart's
 // output register to be empty.
 void
-uartputc_sync(int c)
+hal_putchar(int c)
 {
   if(panicking == 0)
     push_off();
@@ -121,8 +121,8 @@ uartputc_sync(int c)
 
 // try to read one input character from the UART.
 // return -1 if none is waiting.
-int
-uartgetc(void)
+static int
+uart_getc(void)
 {
   if(ReadReg(LSR) & LSR_RX_READY){
     // input data is ready.
@@ -136,7 +136,7 @@ uartgetc(void)
 // arrived, or the uart is ready for more output, or
 // both. called from devintr().
 void
-uartintr(void)
+hal_console_intr(void (*handler)(int))
 {
   ReadReg(ISR); // acknowledge the interrupt
 
@@ -150,16 +150,9 @@ uartintr(void)
 
   // read and process incoming characters, if any.
   while(1){
-    int c = uartgetc();
+    int c = uart_getc();
     if(c == -1)
       break;
-    consoleintr(c);
+    handler(c);
   }
 }
-
-// ---- HAL unified interface wrappers ----
-void hal_console_init(void)                  { uartinit(); }
-void hal_putchar_sync(int c)                 { uartputc_sync(c); }
-void hal_putchar(int c)                      { uartputc_sync(c); }
-int  hal_getchar(void)                       { return uartgetc(); }
-void hal_console_intr(void (*handler)(int))  { uartintr(); }

@@ -1,6 +1,6 @@
 // Context switch abstraction.
 // struct hal_context holds callee-saved registers.
-// Layout is consumed by the platform swtch.S.
+// Layout is consumed by the platform hal_swtch.S.
 
 #ifndef _HAL_CTX_H_
 #define _HAL_CTX_H_

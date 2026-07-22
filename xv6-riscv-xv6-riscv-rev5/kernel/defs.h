@@ -105,9 +105,6 @@ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
 
-// swtch.S
-void            swtch(struct hal_context*, struct hal_context*);
-
 // spinlock.c
 void            acquire(struct spinlock*);
 int             holding(struct spinlock*);
@@ -146,13 +143,6 @@ void            trapinithart(void);
 extern struct spinlock tickslock;
 void            prepare_return(void);
 
-// uart.c
-void            uartinit(void);
-void            uartintr(void);
-void            uartwrite(char [], int);
-void            uartputc_sync(int);
-int             uartgetc(void);
-
 // vm.c
 void            kvminit(void);
 void            kvminithart(void);
@@ -172,12 +162,6 @@ int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
 uint64          vmfault(pagetable_t, uint64, int);
-
-// plic.c
-void            plicinit(void);
-void            plicinithart(void);
-int             plic_claim(void);
-void            plic_complete(int);
 
 // virtio_disk.c
 void            virtio_disk_init(void);
