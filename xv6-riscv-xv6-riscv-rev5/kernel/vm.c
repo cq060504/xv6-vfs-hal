@@ -553,33 +553,6 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   }
 }
 
-// Fill one TLB entry for VA from a PTE, bypassing lddir/ldpte.
-// Masks P(b7) and W(b8) from memory PTE → TLBELO format.
-// Uses tlbfill (random slot), works in non-TLBR context.
-static void
-tlb_fill_from_pte(uint64 va_page, pte_t pte_val)
-{
-#ifdef ARCH_loongarch
-  // Clear P(b7) and W(b8) — reserved in TLBELO
-  uint64 hi, lo;
-  lo = pte_val;
-  asm volatile("srli.d %0, %1, 9" : "=r"(hi) : "r"(lo));
-  asm volatile("slli.d %0, %0, 9" : "+r"(hi));
-  lo &= 0x7F;                       // keep V,D,PLV,MAT,G
-  lo |= hi;                         // combine PPN + flags
-
-  asm volatile("csrwr %0, 0x12" : : "r"(lo));           // TLBELO0
-  asm volatile("csrwr %0, 0x13" : : "r"(lo));           // TLBELO1
-  asm volatile("csrwr %0, 0x11" : : "r"(va_page));      // TLBEHI
-  // TLBIDX.NE=0 → tlbfill writes a valid entry
-  asm volatile("csrwr %0, 0x10" : : "r"(0x0C000000));   // PS=12,NE=0
-  asm volatile("tlbfill");
-#else
-  (void)va_page;
-  (void)pte_val;
-#endif
-}
-
 // allocate and map user memory if process is referencing a page
 // that was lazily allocated in sys_sbrk().
 // returns 0 if va is invalid, non-zero if handled.
@@ -607,9 +580,8 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
     if(read == 0 && (*pte & PTE_W) == 0)
       return 0;
 
-    // Page exists but TLB entry is stale/invalid.
-    // Re-fill TLB directly, bypassing the lddir/ldpte handler.
-    tlb_fill_from_pte(va, *pte);
+    // The mapping is valid. userret flushes stale TLB entries, and a retry
+    // is filled from this PTE by the architecture's normal refill path.
     return 1;  // handled
   }
 
@@ -622,7 +594,6 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
     kfree((void *)mem);
     return 0;
   }
-  tlb_fill_from_pte(va, PA2PTE(mem) | PTE_W | PTE_U | PTE_R | PTE_V_CACHE);
   return mem;
 }
 
