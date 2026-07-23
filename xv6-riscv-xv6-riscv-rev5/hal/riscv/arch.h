@@ -379,6 +379,8 @@ static inline void   hal_cpu_idle(void)       { asm volatile("wfi"); }
 // needs the valid bit, but vm.c uses the shared name for both architectures.
 #define PTE_V_CACHE PTE_V
 
+#define hal_pte_encode_perm(perm) (perm)
+
 // shift a physical address to the right place for a PTE.
 #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
 #define PTE2PA(pte) (((pte) >> 10) << 12)

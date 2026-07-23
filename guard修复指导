@@ -1,0 +1,253 @@
+在保留 DMW0 的前提下，正确方案是：
+
+  低地址：继续通过 DMW0 访问内核代码、数据、MMIO、trapframe
+  用户低地址：通过 PGDL
+  内核高地址栈：通过固定 PGDH 页表
+
+  DMW0 只命中最高半字节为 0 的地址；将栈放到合法的高规范地址后不会命中 DMW0。LoongArch 会依据坏地址所属的高低半区从 PGDL/PGDH
+  选择页表根，CSR.PGD 还可以自动返回正确的根。LoongArch 架构手册
+  (https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html)
+
+  最终布局
+
+  建议在 xv6-riscv-xv6-riscv-rev5/hal/loongarch/memlayout.h:66 使用下降式布局：
+
+  KSTACK_TOP
+  +-------------------+
+  | 进程0 栈第2页      | <- 初始 SP
+  +-------------------+
+  | 进程0 栈第1页      | <- KSTACK(0)
+  +-------------------+
+  | 未映射 guard       |
+  +-------------------+
+  | 进程1 栈第2页      |
+  +-------------------+
+  | 进程1 栈第1页      |
+  +-------------------+
+  | 未映射 guard       |
+  +-------------------+
+
+  概念公式为：
+
+  #define KSTACK_TOP  0xFFFFFFFFFFFFF000ULL
+  #define KSTACK(p)   (KSTACK_TOP - ((uint64)(p) * 3 + 2) * PGSIZE)
+
+  其中：
+
+  - 映射 KSTACK(p) 和 KSTACK(p)+PGSIZE。
+  - 不映射 KSTACK(p)-PGSIZE。
+  - 初始栈顶为 KSTACK(p)+2*PGSIZE。
+  - KSTACK_TOP 只是候选值，实施时要验证其符合当前 RVACFG=8 的 40 位规范地址规则：位 63:40 必须是位 39 的符号扩展。
+  - 高地址最高半字节为 F，不会命中 VSEG=0 的 DMW0。
+
+  需要阅读的文件
+
+  必须完整理解：
+
+  - xv6-riscv-xv6-riscv-rev5/kernel/proc.c:29：栈物理页分配、映射和 p->kstack 初始化。
+  - xv6-riscv-xv6-riscv-rev5/kernel/trap.c:99：用户陷入时设置 kernel_sp；当前已经是 +2*PGSIZE。
+  - xv6-riscv-xv6-riscv-rev5/kernel/vm.c:21：内核页表创建、PGDL、DMW、页表 walker。
+  - xv6-riscv-xv6-riscv-rev5/hal/loongarch/arch.h:165：PGDL/PGDH、PTE 和虚拟地址宏。
+  - xv6-riscv-xv6-riscv-rev5/hal/loongarch/hal_tlbrefill.S:1：目前只接受用户低地址并固定读取 PGDL。
+  - xv6-riscv-xv6-riscv-rev5/hal/loongarch/hal_tramp.S:74：切换 PGDL 后第一次使用高地址内核栈。
+  - xv6-riscv-xv6-riscv-rev5/hal/loongarch/hal_kvec.S:10：真实栈溢出后的异常入口。
+  - xv6-riscv-xv6-riscv-rev5/hal/loongarch/hal_start.c:14：每 CPU 的启动栈，可考虑复用为紧急异常栈。
+
+  通常不需要修改：
+
+  - hal_tramp.S：只要 PGDH始终有效，加载高地址 sp 后即可正常调用 usertrap()。
+  - kernel.ld、hal_entry.S：混合方案不改变内核代码和数据的低地址布局。
+  - proc.h、hal_swtch.S：它们已经用 uint64 kstack/context.sp 保存地址，无结构问题。
+
+  修改顺序
+
+  ### 第一阶段：扩展虚拟地址定义
+
+  修改 hal/loongarch/memlayout.h：
+
+  1. 定义高地址 KSTACK_TOP。
+  2. 将 KSTACK(p) 改为下降式高地址布局。
+  3. 定义整个栈区域边界，例如 KSTACK_REGION_BOTTOM。
+  4. 保留每进程“两页栈加一页 guard”。
+  5. 删除“栈由 DMW0 恒等映射”的旧注释。
+
+  同时确认：
+
+  KSTACK(p) % PGSIZE == 0
+  KSTACK(p) + 2*PGSIZE <= KSTACK_TOP
+  KSTACK(NPROC-1) - PGSIZE >= KSTACK_REGION_BOTTOM
+
+  此阶段先不要实际运行，因为 PGDH 和 refill 尚不支持高地址栈。
+
+  ### 第二阶段：允许软件 walker 映射高地址
+
+  当前 xv6-riscv-xv6-riscv-rev5/kernel/vm.c:191 中：
+
+  if(va >= MAXVA)
+    panic("walk");
+
+  MAXVA 是用户空间上限，不应再同时充当内核页表地址上限。
+
+  推荐在架构层增加类似：
+
+  hal_pagetable_va_valid(va)
+
+  LoongArch 接受：
+
+  0 <= va < MAXVA
+  或
+  KSTACK_REGION_BOTTOM <= va < KSTACK_TOP
+
+  RISC-V 仍只接受 va < MAXVA。
+
+  只修改 walk() 的页表可表示地址检查。以下用户接口仍必须保持原来的 MAXVA 检查：
+
+  - walkaddr()
+  - copyin()
+  - copyout()
+  - copyinstr()
+  - uvmalloc() / uvmdealloc()
+  - vmfault()
+
+  否则会破坏 MAXVAplus 等用户地址边界测试。
+
+  ### 第三阶段：建立固定 PGDH
+
+  在 arch.h 中增加：
+
+  r_pgdh()
+  w_pgdh()
+  r_pgd()       // 可选，refill 汇编直接读 CSR_PGD 即可
+
+  补充：
+
+  #define CSR_PGD 0x1B
+
+  在 kvminithart() 中，每个 hart 都执行：
+
+  w_pgdl(MAKE_SATP(kernel_pagetable));
+  w_pgdh(MAKE_SATP(kernel_pagetable));
+
+  PGDL 后续仍由 userret 在用户页表和内核页表之间切换；PGDH 设置后不再切换。
+
+  复用同一个 kernel_pagetable 是最小方案：
+
+  根表低地址索引：原有内核恒等映射
+  根表高地址索引：内核栈映射
+
+  DMW0 会优先处理低地址，PGDH 只在高栈地址发生 TLB miss 时参与。
+
+  ### 第四阶段：扩展 TLB refill
+
+  这是最关键的修改。
+
+  当前 hal_tlbrefill.S 存在两项限制：
+
+  srli.d $t0, $t0, 38
+  bnez   $t0, .Ltlbr_invalid
+  csrrd  $t0, 0x19       # 固定 PGDL
+
+  需要改成两类合法地址：
+
+  用户低地址：[2*PGSIZE, MAXVA)
+  内核高地址：[KSTACK_REGION_BOTTOM, KSTACK_TOP)
+  其余地址：invalid
+
+  页表根不要自己分支读取 PGDL/PGDH，推荐读取：
+
+  csrrd $t0, 0x1B        # CSR.PGD
+
+  在 TLB refill 上下文中，CSR.PGD 会依据 TLBRBADV 自动返回 PGDL 或 PGDH，避免在汇编中重复实现地址半区判断。LoongArch PGD 定义
+  (https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html)
+
+  后续四级 lddir/ldpte 算法可以保持不变。
+
+  未映射 guard 的处理也应保留当前逻辑：
+
+  找不到有效 PTE
+  → 填入匹配但 V=0 的 TLB 项
+  → ertn 重试
+  → 产生普通 PIL/PIS
+  → 进入 kernelvec/kerneltrap
+
+  否则 guard miss 会不断进入 refill，形成无限循环。
+
+  不要在这个补丁中同时优化 ASID、全局 TLB 或删除 userret 的全量 invtlb。每次用户返回清空 TLB 会让下一次陷入重新填充高栈条目，性能不理
+  想，但行为简单稳定。
+
+  ### 第五阶段：激活高地址栈
+
+  确认 xv6-riscv-xv6-riscv-rev5/kernel/proc.c:34 继续执行：
+
+  kalloc();  // 两次
+  kvmmap(kpgtbl, KSTACK(p), ...);
+  kvmmap(kpgtbl, KSTACK(p) + PGSIZE, ...);
+
+  不要给 KSTACK(p)-PGSIZE 建立 PTE。
+
+  确认两个栈顶完全一致：
+
+  p->context.sp = p->kstack + 2 * PGSIZE;
+  p->trapframe->kernel_sp = p->kstack + 2 * PGSIZE;
+
+  后者在当前代码中已经修正。前者仍需复核 allocproc()。
+
+  内核栈 PTE 应为：
+
+  PTE_R | PTE_W
+
+  不要设置 PTE_U。暂时也不必设置 PTE_G，因为 LoongArch 的一个 TLB 项同时覆盖偶页和奇页，只有成对页面都带 G 时才会成为全局项，guard 邻
+  接会使处理更复杂。
+
+  ### 第六阶段：增加可诊断的溢出处理
+
+  只建立未映射 guard 可以阻止越界写入，但真实栈溢出时存在第二个问题：
+
+  函数先把 sp 减到 guard
+  → 保存寄存器时触发 PIS
+  → kernelvec 继续在当前 sp 上压异常帧
+  → 再次访问 guard
+  → 嵌套异常
+
+  因此“真正保护”已经成立，但不一定能稳定输出 panic。要获得稳定诊断，应在 hal_kvec.S 添加紧急栈路径。
+
+  建议：
+
+  1. 保留 SAVE2/SAVE3 等未使用的 CSR 保存入口处临时寄存器。
+  2. 在 kernelvec 执行 sp -= 160 之前读取 ESTAT 和 BADV。
+  3. 若异常是 PIL/PIS，且 BADV 落在整个 KSTACK 区域，判定为内核栈映射/guard 故障。
+  4. 保存原始 sp，切换到当前 CPU 的紧急栈。
+  5. 调用一个不返回的 C 函数，打印 PID、BADV、原始 SP 后 panic。
+  6. 普通异常路径必须完整恢复被检查代码使用的临时寄存器，再执行原有保存流程。
+
+  为减少新增内存，可以复用 xv6-riscv-xv6-riscv-rev5/hal/loongarch/hal_start.c:14 的 stack0。进入调度器以后，这组每 CPU 启动栈不再承担
+  正常执行，可作为只用于 panic 的紧急栈。需要将其导出给汇编，并明确它只用于不可恢复异常。
+
+  不要让所有中断都长期运行在共享的 per-CPU 中断栈上，因为 kerneltrap() 可能调用 yield()；被切出的进程若仍引用该 CPU 栈帧，后续中断可能
+  覆盖它。紧急栈只用于识别出的栈故障并立即 panic。
+
+  验证顺序
+
+  1. 保持旧低地址 KSTACK，只加入 PGDH 和 refill 的 CSR.PGD 支持，验证系统仍能启动。
+  2. 使用 CPUS=1 切换到高地址栈，验证 init、shell、fork、exec。
+  3. 使用 CPUS>1 验证调度、睡眠唤醒和定时器抢占。
+  4. 在当前进程栈仍有效时，主动写 p->kstack-PGSIZE，应得到一次清晰的内核页异常和 panic。
+  5. 用 noinline 递归函数加较大的 volatile 局部数组制造真实溢出，验证紧急栈路径能输出诊断，而不是无限 refill 或无输出重启。
+  6. 运行 usertests -q，特别关注 MAXVAplus、sbrk、forkfork、bigargtest。
+  7. 最后运行 grind 和多核文件系统操作，覆盖深调用链与频繁上下文切换。
+
+  完成标准
+
+  通过以下条件才能称为真正的 guard：
+
+  - 运行时 sp 是高地址页表映射，不是 DMW0 地址。
+  - 两个栈页有 PLV0 可读写 PTE。
+  - guard 页没有有效 PTE。
+  - PGDH 在所有 hart 上固定有效。
+  - refill 能依据高低地址选择 PGDH/PGDL。
+  - 用户空间仍被限制在原来的 MAXVA。
+  - 访问 guard 必然产生 PIL/PIS，而不是写入物理间隔。
+  - 真实栈溢出能够使用紧急栈稳定报告并停止系统。
+
+  DMW0 仍会提供这些物理栈页的低地址别名，因此 guard 不能防止任意错误指针直接通过物理别名写坏栈；它保护的是最重要的场景：沿当前内核 sp
+  连续增长产生的栈越界。

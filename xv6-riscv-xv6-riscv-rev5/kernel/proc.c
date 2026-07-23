@@ -42,7 +42,7 @@ proc_mapstacks(pagetable_t kpgtbl)
     char *pa2 = kalloc();
     if(pa2 == 0)
       panic("kalloc");
-    uint64 va = KSTACK((int) (p - proc));
+    uint64 va = KSTACK((int) (p - proc));//p- proc is the index of the process,KSTACK calculates the virtual address of the kernel stack 
     // Map two physical pages for kernel stack
     kvmmap(kpgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
     kvmmap(kpgtbl, va + PGSIZE, (uint64)pa2, PGSIZE, PTE_R | PTE_W);

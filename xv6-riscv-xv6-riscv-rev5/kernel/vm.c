@@ -256,7 +256,7 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
       return -1;
     if(*pte & PTE_V)
       panic("mappages: remap");
-    *pte = PA2PTE(pa) | perm | PTE_V_CACHE;
+    *pte = PA2PTE(pa) | hal_pte_encode_perm(perm) | PTE_V_CACHE;
     if(a == last)
       break;
     a += PGSIZE;

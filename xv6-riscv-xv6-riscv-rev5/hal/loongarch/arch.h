@@ -3,7 +3,8 @@
 //
 // Key differences from RISC-V:
 //  - CSR instructions: csrrd (read), csrwr (write), csrxchg (exchange)
-//  - PTE PPN is split across two bit ranges (PPN[47:0]→PTE[59:12], PPN[52:48]→PTE[11:7])
+//  - PTE PPN stays in aligned bits [PALEN-1:12]; bits [11:7] hold
+//    page-walk metadata or are ignored when the entry is installed in the TLB
 //  - Software TLB refill via TLBRENTRY (not hardware page walk)
 //  - Only 2 privilege levels: PLV0 (kernel) and PLV3 (user)
 //  - Exception return: ertn (not sret/mret)
@@ -348,15 +349,16 @@ typedef uint64 *pagetable_t;
 #define PTE_G     (1L << 6)             // global
 #define PTE_P     (1L << 7)             // physical page exists
 #define PTE_HW_W  (1L << 8)             // hardware page-table writable
+#define PTE_NR    (1UL << 61)           // no-read
 #define PTE_NX    (1UL << 62)           // no-execute
 #define PTE_RPLV  (1UL << 63)           // restricted privilege enable
 
-// Map to RISC-V-compatible flag names used by kernel/vm.c.
-// LoongArch semantics: default is readable+executable (NX=0, RPLV=0).
-// D+W make the page writable, PLV[3:2]=11 allows user access.
-#define PTE_R  (0)          // readable (default when RPLV=0)
+// Mapping permissions used by common kernel code. R and X are software-only
+// request bits because LoongArch represents their absence with NR and NX.
+// Bits 9 and 10 do not overlap the physical address or hardware attributes.
+#define PTE_R  (1L << 9)
 #define PTE_W  (PTE_D | PTE_HW_W)
-#define PTE_X  (0)          // executable (default when NX=0)
+#define PTE_X  (1L << 10)
 #define PTE_U  PTE_PLV3     // user accessible (PLV=3)
 
 // Combined flag for valid+cacheable — used when creating PTEs.
@@ -369,7 +371,36 @@ typedef uint64 *pagetable_t;
 #define PA2PTE(pa)  ((uint64)(pa) & 0x0FFFFFFFFFFF000ULL)
 #define PTE2PA(pte) ((uint64)(pte) & 0x0FFFFFFFFFFF000ULL)
 
-#define PTE_FLAGS(pte) ((pte) & 0xE0000000000001FFUL)
+// Translate positive R/W/X/U permissions into LoongArch's native negative
+// NR/NX representation when constructing a leaf PTE.
+static inline uint64
+hal_pte_encode_perm(uint64 perm)
+{
+  uint64 native = perm & (PTE_W | PTE_U | PTE_G);
+
+  if((perm & PTE_R) == 0)
+    native |= PTE_NR;
+  if((perm & PTE_X) == 0)
+    native |= PTE_NX;
+
+  return native;
+}
+
+// Recover common permissions when uvmcopy() duplicates a mapping.
+static inline uint64
+hal_pte_decode_perm(pte_t pte)
+{
+  uint64 perm = pte & (PTE_W | PTE_U | PTE_G);
+
+  if((pte & PTE_NR) == 0)
+    perm |= PTE_R;
+  if((pte & PTE_NX) == 0)
+    perm |= PTE_X;
+
+  return perm;
+}
+
+#define PTE_FLAGS(pte) hal_pte_decode_perm(pte)
 
 // ============================================================
 //  Page table walk macros (same algorithm as RISC-V Sv39)
