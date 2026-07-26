@@ -28,12 +28,16 @@
 #define CSR_PGDL    0x19   // Page Table Base (low half addr space)
 #define CSR_PGDH    0x1A   // Page Table Base (high half addr space)
 #define CSR_PGD     0x1B   // Selected page table base for the faulting VA
+#define CSR_PWCL    0x1C   // Page Walk Controller Low
+#define CSR_PWCH    0x1D   // Page Walk Controller High
 #define CSR_RVACFG  0x1F   // Reduced Virtual Address Configuration
 #define CSR_CPUID   0x20   // Core ID (= mhartid)
+#define CSR_KSAVE1  0x31   // Kernel save register used for trapframe KVA
 #define CSR_TCFG    0x41   // Timer Config: enable + period
 #define CSR_TVAL    0x42   // Timer Value: countdown
 #define CSR_TICLR   0x44   // Timer Interrupt Clear
 #define CSR_LLBCTL  0x60   // Load-Link / Store-Conditional ctl
+#define CSR_TLBRENTRY 0x88 // TLB refill entry point
 #define CSR_DMW0    0x180  // Direct Mapping Window 0
 #define CSR_DMW1    0x181  // Direct Mapping Window 1
 
@@ -236,6 +240,24 @@ static inline void w_rvacfg(uint64 x) {
   asm volatile("csrwr %0, 0x1F" : "+r"(x));
 }
 
+// --- PWCL/PWCH: Page walk layout ---
+static inline void w_pwcl(uint64 x) {
+  asm volatile("csrwr %0, 0x1C" : "+r"(x));
+}
+static inline void w_pwch(uint64 x) {
+  asm volatile("csrwr %0, 0x1D" : "+r"(x));
+}
+
+// --- KSave1: current user trapframe kernel address ---
+static inline void w_ksave1(uint64 x) {
+  asm volatile("csrwr %0, 0x31" : "+r"(x));
+}
+
+// --- TLBRENTRY: software TLB refill entry point ---
+static inline void w_tlbrentry(uint64 x) {
+  asm volatile("csrwr %0, 0x88" : "+r"(x));
+}
+
 // --- DMW0 (0x180): Direct Mapping Window 0 ---
 static inline void w_dmw0(uint64 x) {
   asm volatile("csrwr %0, 0x180" : "+r"(x));
@@ -402,6 +424,12 @@ hal_pte_decode_perm(pte_t pte)
 
 #define PTE_FLAGS(pte) hal_pte_decode_perm(pte)
 
+static inline int
+hal_pte_is_leaf(pte_t pte)
+{
+  return (pte & PTE_P) != 0;
+}
+
 // ============================================================
 //  Page table walk macros (same algorithm as RISC-V Sv39)
 // ============================================================
@@ -511,5 +539,6 @@ static inline void   hal_tlb_flush_all(void)    { sfence_vma(); }
 static inline void   hal_intr_on(void)          { intr_on(); }
 static inline void   hal_intr_off(void)         { intr_off(); }
 static inline int    hal_intr_get(void)         { return intr_get(); }
+static inline void   hal_trap_bind_user_frame(uint64 kva) { w_ksave1(kva); }
 
 #endif // __ASSEMBLER__

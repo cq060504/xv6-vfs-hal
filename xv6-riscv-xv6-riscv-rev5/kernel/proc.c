@@ -178,10 +178,6 @@ freeproc(struct proc *p)
 }
 
 // Create a user page table for a given process, with no user memory.
-// RISC-V also maps the trampoline and trapframe pages into this pagetable.
-// LoongArch reaches its low trampoline through DMW0 in PLV0 and reaches the
-// trapframe through KSave1, so those fixed low VAs remain available to user
-// heap mappings.
 pagetable_t
 proc_pagetable(struct proc *p)
 {
@@ -192,26 +188,11 @@ proc_pagetable(struct proc *p)
   if(pagetable == 0)
     return 0;
 
-#ifndef ARCH_loongarch
-  // map the trampoline code (for system call return)
-  // at the highest user virtual address.
-  // only the supervisor uses it, on the way
-  // to/from user space, so not PTE_U.
-  if(mappages(pagetable, TRAMPOLINE, PGSIZE,
-              (uint64)trampoline, PTE_R | PTE_X) < 0){
+  if(hal_vm_map_user_trap(pagetable, (uint64)trampoline,
+                          (uint64)p->trapframe) < 0){
     uvmfree(pagetable, 0);
     return 0;
   }
-
-  // map the trapframe page just below the trampoline page, for
-  // trampoline.S.
-  if(mappages(pagetable, TRAPFRAME, PGSIZE,
-              (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
-    uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-    uvmfree(pagetable, 0);
-    return 0;
-  }
-#endif
 
   return pagetable;
 }
@@ -221,10 +202,7 @@ proc_pagetable(struct proc *p)
 void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
-#ifndef ARCH_loongarch
-  uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-  uvmunmap(pagetable, TRAPFRAME, 1, 0);
-#endif
+  hal_vm_unmap_user_trap(pagetable);
   uvmfree(pagetable, sz);
 }
 

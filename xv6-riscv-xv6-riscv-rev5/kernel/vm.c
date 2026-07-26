@@ -12,8 +12,6 @@
  */
 pagetable_t kernel_pagetable;
 
-extern char etext[];  // kernel.ld sets this to end of kernel code.
-
 extern char trampoline[]; // trampoline.S
 
 // Make a direct-map page table for the kernel.
@@ -23,59 +21,11 @@ kvmmake(void)
   pagetable_t kpgtbl;
 
   kpgtbl = (pagetable_t) kalloc();
+  if(kpgtbl == 0)
+    panic("kvmmake");
   memset(kpgtbl, 0, PGSIZE);
 
-  // uart registers
-  kvmmap(kpgtbl, PGROUNDDOWN(UART0), PGROUNDDOWN(UART0), PGSIZE, PTE_R | PTE_W);
-
-  // PLIC/EIOINTC interrupt controller region
-  kvmmap(kpgtbl, PLIC, PLIC, 0x4000000, PTE_R | PTE_W);
-
-#ifdef ARCH_loongarch
-  // VIRTIO0 is within PLIC range on LoongArch (0x10000000 in 0x0FE00000-0x13E00000)
-  // Skip separate VIRTIO0 mapping - it's already mapped by PLIC.
-  // VIRTIO0 is PCI-based on LoongArch, accessed via PCI config space, not direct MMIO.
-
-  // Map kernel code from flash, split around the TRAMPOLINE page.
-  // TRAMPOLINE (0x1C008000) sits inside the read-only sections.
-  // Map code before and after it; the trampoline page itself is
-  // DMW0-accessible for kernel and user-page-table-mapped for user.
-  extern char _data_lma[], _trampoline[];
-  uint64 rodata_end = (uint64)_data_lma;
-  uint64 tramp_va   = (uint64)_trampoline;
-  if (tramp_va > KERNBASE)
-    kvmmap(kpgtbl, KERNBASE, KERNBASE, tramp_va - KERNBASE, PTE_R | PTE_X);
-  uint64 after_tramp = tramp_va + PGSIZE;
-  if (rodata_end > after_tramp)
-    kvmmap(kpgtbl, after_tramp, after_tramp, rodata_end - after_tramp, PTE_R | PTE_X);
-#else
-  // virtio mmio disk interface (RISC-V only)
-  kvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
-#if defined(VIRTIO1) && VIRTIO_NDISK > 1
-  kvmmap(kpgtbl, VIRTIO1, VIRTIO1, PGSIZE, PTE_R | PTE_W);
-#endif
-#if defined(VIRTIO2) && VIRTIO_NDISK > 2
-  kvmmap(kpgtbl, VIRTIO2, VIRTIO2, PGSIZE, PTE_R | PTE_W);
-#endif
-
-  // map kernel text executable and read-only.
-  kvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
-#endif
-
-#ifdef ARCH_loongarch
-  // LoongArch: kernel .data/.bss are in RAM at 0x00400000, not after etext in flash.
-  // Map the RAM data+bss region, then free RAM for kalloc.
-  extern char _data_start[], _bss_end[], end[];
-  uint64 ram_begin = PGROUNDDOWN((uint64)_data_start);
-  uint64 ram_end   = PGROUNDUP((uint64)_bss_end);
-  uint64 free_begin = PGROUNDUP((uint64)end);
-  kvmmap(kpgtbl, ram_begin, ram_begin, ram_end - ram_begin, PTE_R | PTE_W);
-  if(free_begin < PHYSTOP)
-    kvmmap(kpgtbl, free_begin, free_begin, PHYSTOP - free_begin, PTE_R | PTE_W);
-#else
-  // map kernel data and the physical RAM we'll make use of.
-  kvmmap(kpgtbl, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
-#endif
+  hal_vm_map_kernel(kpgtbl);
 
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
@@ -109,65 +59,7 @@ kvminit(void)
 void
 kvminithart()
 {
-  // wait for any previous writes to the page table memory to finish.
-  sfence_vma();
-
-  w_satp(MAKE_SATP(kernel_pagetable));
-
-#ifdef ARCH_loongarch
-  // PGDH stays fixed on kernel_pagetable for the lifetime of the system.
-  // PGDL is switched by userret between user/kernel page tables.
-  w_pgdh(MAKE_SATP(kernel_pagetable));
-#endif
-
-  // flush stale entries from the TLB.
-  sfence_vma();
-
-#ifdef ARCH_loongarch
-  // DMW0 (VSEG=0, PLV=PLV0) identity-maps VA[63:60]=0 → PA=VA.
-  // Covers kernel code/data/flash/UART/EIOINTC/TRAMPOLINE — all low VA.
-  // Kernel stacks are at high VA (VA[63]=1) and go through PGDH, not DMW0.
-  w_dmw0(0x0000000000000011ULL);  // PLV0, MAT=01(CC), VSEG=0
-  w_dmw1(0);
-
-  // Flush all TLB entries before enabling MMU
-  sfence_vma();
-
-  // Configure 4-level page table walk (must match walk() and TLB handler):
-  //   Level 3 (PGD): VA[47:39], base=39, width=9
-  //   Level 2 (PUD): VA[38:30], base=30, width=9
-  //   Level 1 (PMD): VA[29:21], base=21, width=9
-  //   Level 0 (PTE): VA[20:12], base=12, width=9, 64-bit entries
-  asm volatile("csrwr %0, 0x1C" : : "r"(
-    (12UL << 0)  | (9UL << 5)  | (21UL << 10) |
-    (9UL << 15)  | (30UL << 20) | (9UL << 25)
-  ));
-  asm volatile("csrwr %0, 0x1D" : : "r"(
-    (39UL << 0)  | (9UL << 6)
-  ));
-
-  // QEMU la464 reports VALEN=48. RVACFG can reduce mapped-mode VA
-  // validity by at most 8 bits, so this makes >=1<<40 trap as ADE.
-  // xv6's stricter MAXVA=1<<38 is enforced in walk/copy/vmfault and
-  // in the software TLB refill handler below.
-  w_rvacfg(8);
-
-  // Set TLB refill entry point for user-space TLB misses
-  extern void tlb_refill_entry(void);
-  uint64 tlbr_entry = (uint64)tlb_refill_entry;
-  asm volatile("csrwr %0, 0x88" : "+r"(tlbr_entry));
-
-  // Enable MMU: clear DA (direct address), set PG (page table).
-  // DA must be 0 for PG to take effect. Write atomically.
-  uint64 crmd = r_crmd();
-  crmd &= ~CRMD_DA;     // disable direct address translation
-  crmd |= CRMD_PG;      // enable page table walk
-  w_crmd(crmd);
-
-  // ldpte on QEMU la464 clears P(b7)/W(b8) when writing TLBRELO,
-  // so no manual bit-clearing is needed in the TLB refill handler.
-  // Verified by removing the bstrins.d clearing and passing usertests.
-#endif
+  hal_vm_enable(kernel_pagetable);
 }
 
 // Return the address of the PTE in page table pagetable
@@ -358,19 +250,8 @@ freewalk(pagetable_t pagetable)
   for(int i = 0; i < 512; i++){
     pte_t pte = pagetable[i];
     if(pte & PTE_V) {
-#ifdef ARCH_loongarch
-      // LoongArch: non-leaf PTEs have PTE_V but no MAT bit.
-      // Leaf PTEs always have PTE_V_CACHE (V+MAT) set.
-      // This distinguishes them: non-leaf has V=1,MAT=0; leaf has V=1,MAT=1.
-      if(pte & PTE_MAT) {
+      if(hal_pte_is_leaf(pte))
         panic("freewalk: leaf");
-      }
-#else
-      // RISC-V: non-leaf PTEs have V=1 but no R/W/X flags.
-      if((pte & (PTE_R|PTE_W|PTE_X)) != 0){
-        panic("freewalk: leaf");
-      }
-#endif
       uint64 child = PTE2PA(pte);
       freewalk((pagetable_t)child);
       pagetable[i] = 0;

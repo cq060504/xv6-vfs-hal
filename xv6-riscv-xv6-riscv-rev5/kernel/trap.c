@@ -116,14 +116,7 @@ prepare_return(void)
   p->trapframe->kernel_trap = (uint64)usertrap;
   p->trapframe->kernel_hartid = hal_get_hartid();      // hartid for cpuid()
 
-#ifdef ARCH_loongarch
-  // LoongArch: store trapframe kernel VA in KSave1 (CSR 0x31) so
-  // uservec/userret can access the trapframe via DMW0 identity mapping.
-  // This avoids DMW0 hijacking TRAPFRAME-VA-based accesses (which would
-  // go to PA=VA=TRAPFRAME instead of the actual physical trapframe page).
-  uint64 tf_kva = (uint64)p->trapframe;
-  asm volatile("csrwr %0, 0x31" : "+r"(tf_kva));
-#endif
+  hal_trap_bind_user_frame((uint64)p->trapframe);
 
   // set up the registers that trampoline.S's sret will use
   // to get to user space.
@@ -184,11 +177,7 @@ clockintr()
   // of a second.
   hal_set_timer(hal_get_time() + 1000000);
 
-#ifdef ARCH_loongarch
-  // LoongArch QEMU UART RX interrupt may not fire reliably.
-  // Poll the UART on each timer tick so keyboard input works.
-  hal_console_intr(consoleintr);
-#endif
+  hal_console_poll(consoleintr);
 }
 
 // check if it's an external interrupt or software interrupt,

@@ -43,6 +43,7 @@ ARCH_OBJS = \
   $(HAL)/$(ARCH)/hal_kvec.o \
   $(HAL)/$(ARCH)/hal_plic.o \
   $(HAL)/$(ARCH)/hal_uart.o \
+  $(HAL)/$(ARCH)/hal_vm.o \
   $(HAL)/$(ARCH)/hal_virtio.o
 
 # LoongArch overrides: hal_intr replaces hal_plic, add TLB refill handler
@@ -55,6 +56,7 @@ ARCH_OBJS = \
   $(HAL)/$(ARCH)/hal_kvec.o \
   $(HAL)/$(ARCH)/hal_intr.o \
   $(HAL)/$(ARCH)/hal_uart.o \
+  $(HAL)/$(ARCH)/hal_vm.o \
   $(HAL)/$(ARCH)/hal_virtio.o \
   $(HAL)/$(ARCH)/hal_tlbrefill.o
 endif

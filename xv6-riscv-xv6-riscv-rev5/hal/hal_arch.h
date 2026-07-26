@@ -26,6 +26,9 @@ uint64 hal_read_stval(void);
 uint64 hal_read_stvec(void);
 void   hal_write_stvec(uint64);
 
+// Make the current process trapframe discoverable by the platform trampoline.
+void hal_trap_bind_user_frame(uint64 trapframe_kva);
+
 // ---- Page table base ----
 uint64 hal_read_satp(void);
 void   hal_write_satp(uint64);

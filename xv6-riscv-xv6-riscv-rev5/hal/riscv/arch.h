@@ -360,6 +360,7 @@ static inline void   hal_intr_on(void)        { intr_on(); }
 static inline void   hal_intr_off(void)       { intr_off(); }
 static inline int    hal_intr_get(void)       { return intr_get(); }
 static inline void   hal_cpu_idle(void)       { asm volatile("wfi"); }
+static inline void   hal_trap_bind_user_frame(uint64 kva) { (void)kva; }
 
 #endif // __ASSEMBLER__
 
@@ -385,6 +386,14 @@ static inline void   hal_cpu_idle(void)       { asm volatile("wfi"); }
 #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
 #define PTE2PA(pte) (((pte) >> 10) << 12)
 #define PTE_FLAGS(pte) ((pte) & 0x3FF)
+
+#ifndef __ASSEMBLER__
+static inline int
+hal_pte_is_leaf(pte_t pte)
+{
+  return (pte & (PTE_R | PTE_W | PTE_X)) != 0;
+}
+#endif
 
 // extract the three 9-bit page table indices from a virtual address.
 #define PT_LEVELS       3

@@ -29,7 +29,7 @@ kexec(char *path, char **argv)
 {
   char *s, *last;
   int i, off;
-  uint64 argc, sz = 0, sp, ustack[MAXARG], stackbase;
+  uint64 argc, sz = 0, user_base, sp, ustack[MAXARG], stackbase;
   struct elfhdr elf;
   struct vnode *vp;
   struct proghdr ph;
@@ -51,21 +51,9 @@ kexec(char *path, char **argv)
   if((pagetable = proc_pagetable(p)) == 0)
     goto bad;
 
-#ifdef ARCH_loongarch
-  // QEMU la464 ignores VA bits above VALEN in TLB lookup, so addresses
-  // like 1<<48 can alias VPPN 0. Keep the low two pages mapped as
-  // PLV0-only guards so such aliases trap instead of hitting user data.
-  for(sz = 0; sz < 2*PGSIZE; sz += PGSIZE){
-    char *guard = kalloc();
-    if(guard == 0)
-      goto bad;
-    memset(guard, 0, PGSIZE);
-    if(mappages(pagetable, sz, PGSIZE, (uint64)guard, PTE_R) < 0){
-      kfree(guard);
-      goto bad;
-    }
-  }
-#endif
+  if(hal_vm_reserve_user_low(pagetable, &sz) < 0)
+    goto bad;
+  user_base = sz;
 
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
@@ -78,6 +66,8 @@ kexec(char *path, char **argv)
     if(ph.vaddr + ph.memsz < ph.vaddr)
       goto bad;
     if(ph.vaddr % PGSIZE != 0)
+      goto bad;
+    if(ph.vaddr < user_base)
       goto bad;
     uint64 sz1;
     if(ph.vaddr > sz)

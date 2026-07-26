@@ -156,3 +156,9 @@ hal_console_intr(void (*handler)(int))
     handler(c);
   }
 }
+
+void
+hal_console_poll(void (*handler)(int))
+{
+  (void)handler;
+}
