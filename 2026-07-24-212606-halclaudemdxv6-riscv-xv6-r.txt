@@ -1,0 +1,508 @@
+总览：从开机到栈溢出 panic 的完整路径
+
+  [阶段1] 启动 → [阶段2] 调度 → [阶段3] 用户态 → [阶段4] 陷入 → [阶段5] TLB miss
+   → [阶段6] 溢出
+
+  ---
+  阶段 0：数据结构（先读，理解基础类型）
+
+  ┌─────┬───────────────┬─────┬─────────────────────────┬──────────────────┐
+  │  #  │     文件      │ 行  │          内容           │       目的       │
+  │     │               │ 号  │                         │                  │
+  ├─────┼───────────────┼─────┼─────────────────────────┼──────────────────┤
+  │     │ hal/loongarch │ 318 │ pte_t、PTE_V/W/R/U、PA2 │ 理解 LoongArch   │
+  │ 0.1 │ /arch.h       │ -37 │ PTE、MAXVA、PX()        │ 页表格式         │
+  │     │               │ 4   │                         │                  │
+  ├─────┼───────────────┼─────┼─────────────────────────┼──────────────────┤
+  │     │               │ 全  │ struct proc、struct     │ 理解进程/CPU     │
+  │ 0.2 │ kernel/proc.h │ 文  │ cpu、struct             │ 核心结构体       │
+  │     │               │     │ trapframe、进程状态枚举 │                  │
+  ├─────┼───────────────┼─────┼─────────────────────────┼──────────────────┤
+  │ 0.3 │ hal/hal_ctx.h │ 全  │ struct hal_context（ra, │ 理解上下文切换时 │
+  │     │               │ 文  │  sp, s0-s8 等）         │ 保存哪些寄存器   │
+  ├─────┼───────────────┼─────┼─────────────────────────┼──────────────────┤
+  │ 0.4 │ hal/loongarch │ 全  │ KSTACK_TOP、KSTACK(p)、 │ 已读过，确认公式 │
+  │     │ /memlayout.h  │ 文  │ KSTACK_REGION_BOTTOM    │ 和边界           │
+  └─────┴───────────────┴─────┴─────────────────────────┴──────────────────┘
+
+  ---
+  阶段 1：Boot CPU 启动（hart 0）
+
+  1.1 main() 入口
+
+  文件： kernel/main.c:9-46
+
+  阅读重点：
+    - 9-34：hart 0 的初始化序列
+    - 35-43：hart 1/2 等 secondary CPU 的等待和初始化路径
+    - 注意 kvminit() 只被 hart 0 调用一次，
+      但 kvminithart() 被每个 hart 各调用一次
+
+  1.2 内核页表创建 kvminit() → kvmmake()
+
+  文件： kernel/vm.c:101-105（kvminit），kernel/vm.c:20-88（kvmmake）
+
+  阅读重点：
+    - kvmmake() 分配 kernel_pagetable
+    - 映射 UART、PLIC/EIOINTC、flash 代码、RAM、TRAMPOLINE
+    - 第 85 行调用 proc_mapstacks(kpgtbl) ← 内核栈映射在这里创建
+
+  1.3 内核栈映射 proc_mapstacks()
+
+  文件： kernel/proc.c:33-50
+
+  阅读重点：
+    - 遍历 proc[0..63]，每个进程 kalloc() 两次
+    - 用 KSTACK(p) 计算 VA，kvmmap() 映射两页
+    - KSTACK(p)-PGSIZE 不映射 → guard page
+    - 映射时调用 walk()，walk() 通过 hal_pagetable_va_valid() 接受高地址
+
+  1.4 页表 walk 算法 walk()
+
+  文件： kernel/vm.c:186-207
+
+  阅读重点：
+    - 第 192-193 行：hal_pagetable_va_valid() 检查地址合法性
+    - 第 195-205 行：4 级循环 walk（level=3→2→1→0）
+    - PX(level, va) 提取 9-bit 索引
+    - alloc=1 时自动分配缺失的中间页表页
+    - 返回叶子 PTE 指针
+
+  1.5 开启 MMU kvminithart()
+
+  文件： kernel/vm.c:109-174
+
+  阅读重点：
+    - 第 115 行：w_satp() → 写 PGDL
+    - 第 117-121 行：w_pgdh() → 写 PGDH（固定不变）
+    - 第 133 行：w_dmw0() → 配置 DMW0（低地址恒等映射）
+    - 第 156 行：w_rvacfg(8) → 40 位有效 VA
+    - 第 163-168 行：清除 DA、设置 PG → 开启 MMU
+
+  1.6 进程初始化 procinit()
+
+  文件： kernel/proc.c:53-65
+
+  阅读重点：
+    - 每个进程初始化 spinlock、state=UNUSED
+    - 第 63 行：p->kstack = KSTACK(p - proc) ← 记录栈的起始 VA
+    - 这里只设置 kstack 值，不分配物理页（物理页已在 proc_mapstacks
+  中分配并映射）
+
+  1.7 创建第一个进程 userinit() → allocproc()
+
+  文件： kernel/proc.c:233-246（userinit），kernel/proc.c:115-156（allocproc）
+
+  阅读重点：
+    - allocproc() 第 135 行：分配 trapframe 物理页
+    - 第 142 行：创建用户页表 proc_pagetable()
+    - 第 152 行：context.ra = forkret ← 首次调度入口
+    - 第 153 行：context.sp = kstack + 2*PGSIZE ← 初始栈指针
+    - 第 181-217 行：proc_pagetable() → 注意 LoongArch 不走 TRAMPOLINE/TRAPFRAME
+   映射分支
+
+  ---
+  阶段 2：调度器与首次上下文切换
+
+  2.1 调度器 scheduler()
+
+  文件： kernel/proc.c:437-475
+
+  阅读重点：
+    - 无限循环扫描 proc[]，找到 RUNNABLE → RUNNING
+    - 第 461 行：hal_switch(&c->context, &p->context) ← 关键切换
+    - 切换后 CPU 从 p->context 恢复寄存器
+
+  2.2 上下文切换 hal_switch
+
+  文件： hal/loongarch/hal_swtch.S
+
+  阅读重点：
+    - 保存当前 CPU 的 callee-saved 寄存器到 old context
+    - 从 new context 恢复寄存器（包括 ra=forkret, sp=KSTACK(0)+2*PGSIZE）
+    - ret 到 forkret
+
+  ---
+  阶段 3：首次返回用户态
+
+  3.1 forkret()
+
+  文件： kernel/proc.c:518-553
+
+  阅读重点：
+    - 第 549 行：prepare_return() → 设置 trapframe 的各字段
+    - 第 550-552 行：跳转到 userret(trampoline)
+
+  3.2 prepare_return()
+
+  文件： kernel/trap.c:99-120
+
+  阅读重点：
+    - 第 115 行：trapframe->kernel_sp = p->kstack + 2*PGSIZE
+      ← 下次从用户态陷入时，uservec 从这里加载 sp
+    - 第 114 行：trapframe->kernel_satp = hal_read_satp() ← 内核页表
+
+  3.3 userret（返回用户态）
+
+  文件： hal/loongarch/hal_tramp.S:93-141
+
+  阅读重点：
+    - 第 97 行：csrwr $a0, 0x19 → PGDL = 用户页表
+    - 第 98 行：invtlb 0, $r0, $r0 → ★ 清空所有 TLB！
+      这意味着下次访问内核高地址栈时必然 TLB miss
+    - 第 140 行：ertn → 进入用户态（PLV3）
+
+  ---
+  阶段 4：用户态 → 内核态陷入
+
+  4.1 uservec（陷入入口）
+
+  文件： hal/loongarch/hal_tramp.S:28-91
+
+  阅读重点：
+    - 第 30-31 行：通过 KSave1 获取 trapframe 的 KVA
+    - 第 33-68 行：保存全部用户寄存器到 trapframe
+    - 第 75 行：ld.d $sp, $a0, 8 → sp = trapframe->kernel_sp
+      ← ★ 这是高地址栈！sp = 0xFFFFFFFFFFFFF000
+    - 第 87 行：csrwr $t1, 0x19 → PGDL = 内核页表
+    - 第 90 行：跳转到 usertrap()
+
+  4.2 usertrap()
+
+  文件： kernel/trap.c:37-93
+
+  阅读重点：
+    - 第 46 行：w_stvec(kernelvec) → 后续内核态异常走 kernelvec
+    - 第 53-54 行：系统调用处理
+    - 第 68-69 行：设备中断
+    - 第 70-72 行：缺页（懒分配、COW）→ vmfault()
+    - 第 86 行：yield() 如果是定时器中断
+
+  ---
+  阶段 5：TLB Refill（内核栈首次访问）
+
+  5.1 TLB 重填入口
+
+  文件： hal/loongarch/hal_tlbrefill.S:1-103
+
+  阅读重点：
+    - 第 10-12 行：入口，保存 $t0 → TLBRSAVE
+    - 第 20-24 行：设置 TLBREHI.PS=12（4KB 页）
+    - 第 29-51 行：VA 合法性检查（用户或内核栈区间）
+    - 第 52-63 行：根据 TLBRBADV bit63 选 PGDL 或 PGDH，保存到 KSave5
+    - 第 64-97 行：四级 lddir walk → ldpte → tlbfill
+    - 第 98-103 行：无效路径（填入 V=0 的 TLB 项）
+
+  ---
+  阶段 6：栈溢出检测与 panic
+
+  6.1 kernelvec（内核态异常向量）
+
+  文件： hal/loongarch/hal_kvec.S:1-130
+
+  阅读重点：
+    - 第 18-20 行：保存 $t0→KSave3, $t1→KSave4
+    - 第 24-32 行：读 ESTAT，检查 Ecode==PIL(1) 或 PIS(2)
+    - 第 34-43 行：读 BADV，检查是否在 [KSTACK_REGION_BOTTOM, KSTACK_TOP)
+    - 第 46-61 行：确认栈溢出 → 切换紧急栈 → 调用 hal_stack_overflow_panic
+    - 第 63-130 行：正常路径 → 保存寄存器 → 调用 kerneltrap() → 恢复 → ertn
+
+  6.2 hal_stack_overflow_panic()
+
+  文件： hal/loongarch/hal_start.c:94-103
+
+  阅读重点：
+    - 输出 sp、badv、pid 后调用 panic("stack overflow")
+
+  6.3 kerneltrap()（正常内核异常处理）
+
+  文件： kernel/trap.c 中搜索 kerneltrap
+
+  阅读重点：
+    - 处理内核态发生的异常（设备中断、缺页等）
+    - guard page 导致的 PIL/PIS 也会到这里
+
+  ---
+  建议阅读顺序
+
+  第一步：0.1 → 0.2 → 0.3 → 0.4           (数据结构，30 分钟)
+  第二步：1.1 → 1.2 → 1.3 → 1.4 → 1.5     (启动+页表，60 分钟)
+  第三步：1.6 → 1.7                         (进程初始化，30 分钟)
+  第四步：2.1 → 2.2 → 3.1 → 3.2 → 3.3     (调度+用户态，45 分钟)
+  第五步：4.1 → 4.2                         (陷入路径，30 分钟)
+  第六步：5.1                               (TLB refill，45 分钟) ★ 最关键
+  第七步：6.1 → 6.2 → 6.3                  (栈溢出检测+panic，30 分钟)
+
+  总计约 4.5 小时。其中第五步（TLB refill）是排查当前 panic 的关键。
+
+✻ Cooked for 56s
+
+※ recap: 目标：为 LoongArch xv6 实现内核栈 guard page 保护（六个阶段已全部编码完成）。当前卡在启动时 pid=1 立即 panic，sp=0xFFFFFFFFFFFFEFD0, badv=0xFFFFFFFFFFFFEFF8。下一步：按阅读规划排查 TLB refill 能否正确从 PGDH walk 到栈页的 PTE。 (disable recaps in /config)
+
+❯ 1.有 64 个进程的 128 个栈页共享入口 511 → 511 → 511                           
+  的三级路径，只在叶子级区分不同的 PX(0) 索引。如何理解这句话；2.我想阅读代码以 
+  明白loongarch和riscv关于页表项创建、va和pa通过pte完成映射、tlb miss、pte miis 
+  s等关于页表的全部流程。规划一下我应该阅读那些文件，每个文件的作用，阅读的顺序 
+
+  Thought for 11s (ctrl+o to expand)
+
+● 问题 1：为什么说共享 511→511→511 路径？
+
+  所有内核栈地址都在 [KSTACK_REGION_BOTTOM, KSTACK_TOP) 区间内，这个区间的 VA 高
+   24 位全是 1（0xFFFFF...）。
+
+  以 KSTACK(0)=0xFFFFFFFFFFFFD000 为例计算各层索引：
+
+  PX(3, va) = (va >> 39) & 0x1FF    Level 3（顶层）索引
+
+  0xFFFFFFFFFFFFD000 右移 39 位：
+    原始:  1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1111 1101 0000 0000
+   0000
+    >> 39: 0000 0000 0000 0000 0000 0000 0000 0000 0000 0001 1111 1111 1111 1111
+   1111
+    &0x1FF:                                                    1 1111 1111
+           = 511
+
+  PX(2, va) = (va >> 30) & 0x1FF    Level 2 索引
+
+  0xFFFFFFFFFFFFD000 >> 30:
+    0000 0000 0000 0000 0000 0000 0000 0000 0011 1111 1111 1111 1111 1111 1111
+  11
+    &0x1FF:                                         1 1111 1111
+           = 511
+
+  PX(1, va) = (va >> 21) & 0x1FF    Level 1 索引
+    → 同样 = 511
+
+  物理直观理解：KSTACK 区域的高 24 位全是 1。在被 9-9-9 切分后，每一段都是全 1 →
+   511。
+
+  VA 二进制： 1111...1111  111111111  111111111  111111111  偏移12位
+              高24位全1   Level3=511 Level2=511 Level1=511  (叶子级不同)
+
+  叶子级（Level 0）才体现差异：
+
+  PX(0, 0xFFFFFFFFFFFFD000) = (0xFFFFFFFFFFFFD000 >> 12) & 0x1FF
+                            = 0xFFFFFFFFFFFFD & 0x1FF
+                            = 0x1FD = 509
+
+  PX(0, 0xFFFFFFFFFFFFE000) = 0x1FE = 510  （p0 第2页）
+  PX(0, 0xFFFFFFFFFFFFB000) = 0x1FB = 507  （p1 第1页）
+  PX(0, 0xFFFFFFFFFFFFC000) = 0x1FC = 508  （p1 第2页）
+
+  因为 Level 3/2/1 都用同一个索引 511，它们不需要为每个进程创建独立子表。只需要
+  3 个中间页表页（一个 level-2 页、一个 level-1 页、一个 level-0 叶子页）+ 128
+  个叶子 PTE。整个内核栈树只占 4 个物理页。
+
+  ---
+  问题 2：完整页表流程阅读规划
+
+  阅读路线图
+
+  [第1轮] 两架构 PTE 格式 → [第2轮] C 层页表 walk → [第3轮] 启动时页表映射
+    → [第4轮] 硬件 TLB miss → [第5轮] 缺页缺页异常 → [第6轮] 对比两架构
+
+  ---
+  第 1 轮：PTE 格式与基本宏（RISC-V vs LoongArch 对比阅读）
+
+  同一套 C 接口，完全不同的底层实现。
+
+  ┌─────┬───────────────┬──────┬─────────────────────────────────────────────┐
+  │  #  │     文件      │ 行号 │                    内容                     │
+  ├─────┼───────────────┼──────┼─────────────────────────────────────────────┤
+  │ 1.1 │ hal/riscv/arc │ 366- │ PGSIZE、PTE_V/R/W/X/U、PA2PTE、PTE2PA、PX() │
+  │     │ h.h           │ 394  │ 、PT_LEVELS(=3)、MAXVA                      │
+  ├─────┼───────────────┼──────┼─────────────────────────────────────────────┤
+  │ 1.2 │ hal/loongarch │ 318- │ 同上各宏，但 PT_LEVELS=4、PA2PTE            │
+  │     │ /arch.h       │ 374  │ 格式不同、多了 PTE_MAT/P/P_HW_W/NX          │
+  ├─────┼───────────────┼──────┼─────────────────────────────────────────────┤
+  │ 1.3 │ hal/loongarch │ 321- │ PTE 原始位定义：V(0)、D(1)、PLV(2-3)、MAT(4 │
+  │     │ /arch.h       │ 333  │ -5)、G(6)、P(7)、HW_W(8)                    │
+  └─────┴───────────────┴──────┴─────────────────────────────────────────────┘
+
+  对比重点：
+  RISC-V PA2PTE:  (pa >> 12) << 10    // PPN 连续存放 [53:10]
+  LA    PA2PTE:  pa & 0x0FFFFFFFFFFF000  // 保留 PPN，低 12 位为 0
+
+  RISC-V PT_LEVELS: 3  (Sv39)
+  LA    PT_LEVELS: 4
+
+  ---
+  第 2 轮：C 层页表 walk 算法
+
+  ┌─────┬─────────────┬─────────┬────────────────────────────────────────────┐
+  │  #  │    文件     │  行号   │                    内容                    │
+  ├─────┼─────────────┼─────────┼────────────────────────────────────────────┤
+  │ 2.1 │ kernel/vm.c │ 186-207 │ walk() — 4 级下降，PX(level,va)            │
+  │     │             │         │ 提取每层索引，alloc=1 时自动分配缺失页表页 │
+  ├─────┼─────────────┼─────────┼────────────────────────────────────────────┤
+  │ 2.2 │ kernel/vm.c │ 238-267 │ mappages() — 对虚拟地址区间循环调用        │
+  │     │             │         │ walk()，在叶子 PTE 写入 PA+flags           │
+  ├─────┼─────────────┼─────────┼────────────────────────────────────────────┤
+  │ 2.3 │ kernel/vm.c │ 90-98   │ kvmmap() — 对 mappages                     │
+  │     │             │         │ 的简单包装，专用于内核页表映射             │
+  ├─────┼─────────────┼─────────┼────────────────────────────────────────────┤
+  │ 2.4 │ kernel/vm.c │ 210-231 │ walkaddr() — 用户 VA→PA                    │
+  │     │             │         │ 转换（alloc=0，不创建新表），含 U 位检查   │
+  ├─────┼─────────────┼─────────┼────────────────────────────────────────────┤
+  │ 2.5 │ kernel/vm.c │ 340-400 │ uvmalloc()/uvmdealloc() —                  │
+  │     │             │         │ 用户空间按需分配/释放物理页                │
+  └─────┴─────────────┴─────────┴────────────────────────────────────────────┘
+
+  核心理解： walk() 是唯一直接操作页表结构的函数，所有映射/查找都经过它。
+
+  ---
+  第 3 轮：启动时内核页表构建
+
+  ┌─────┬──────────────────────┬───────┬────────────────────────────────────┐
+  │  #  │         文件         │ 行号  │                内容                │
+  ├─────┼──────────────────────┼───────┼────────────────────────────────────┤
+  │     │                      │       │ kvmmake() — 创建                   │
+  │ 3.1 │ kernel/vm.c          │ 20-88 │ kernel_pagetable，映射 UART/PLIC/f │
+  │     │                      │       │ lash/RAM/TRAMPOLINE，调用          │
+  │     │                      │       │ proc_mapstacks                     │
+  ├─────┼──────────────────────┼───────┼────────────────────────────────────┤
+  │     │                      │       │ proc_mapstacks() — 为 64           │
+  │ 3.2 │ kernel/proc.c        │ 33-50 │ 个进程各分配 2 个物理页，kvmmap    │
+  │     │                      │       │ 映射到 KSTACK(p)                   │
+  ├─────┼──────────────────────┼───────┼────────────────────────────────────┤
+  │ 3.3 │ hal/loongarch/memlay │ 83-86 │ KSTACK_TOP、KSTACK(p)、KSTACK_REGI │
+  │     │ out.h                │       │ ON_BOTTOM 的宏定义                 │
+  ├─────┼──────────────────────┼───────┼────────────────────────────────────┤
+  │ 3.4 │ hal/riscv/memlayout. │ 45-50 │ RISC-V 的 KSTACK(p)（在 TRAMPOLINE │
+  │     │ h                    │       │  下方，VA < MAXVA）                │
+  ├─────┼──────────────────────┼───────┼────────────────────────────────────┤
+  │     │                      │ 109-1 │ kvminithart() — 写                 │
+  │ 3.5 │ kernel/vm.c          │ 74    │ PGDL/PGDH/DMW0/启动 MMU（LA）；写  │
+  │     │                      │       │ satp/sfence.vma（RV）              │
+  └─────┴──────────────────────┴───────┴────────────────────────────────────┘
+
+  对比重点： RISC-V 内核栈在 MAXVA 下方（TRAMPOLINE - ...），LoongArch 在
+  0xFFFFFFFFFFFFF000 往下。
+
+  ---
+  第 4 轮：TLB Miss 处理（两架构差异最大处）
+
+  #: 4.1
+  文件: hal/loongarch/hal_tlbrefill.S
+  行号: 1-103
+  内容: 软件 TLB refill：TLBRENTRY 入口 → 设置 PS → VA 检查 → 选 PGDL/PGDH →
+  四级
+     lddir → ldpte → tlbfill → ertn
+  ────────────────────────────────────────
+  #: 4.2
+  文件: hal/loongarch/hal_tlbrefill.S
+  行号: 14-19
+  内容: TLBREHI.PS 设置（4KB 页）
+  ────────────────────────────────────────
+  #: 4.3
+  文件: hal/loongarch/hal_tlbrefill.S
+  行号: 28-51
+  内容: VA 合法性验证（用户区间 + 内核栈区间）
+  ────────────────────────────────────────
+  #: 4.4
+  文件: hal/loongarch/hal_tlbrefill.S
+  行号: 52-63
+  内容: 根据 bit63 选 PGDL/PGDH → 保存根 PA 到 KSave5
+  ────────────────────────────────────────
+  #: 4.5
+  文件: hal/loongarch/hal_tlbrefill.S
+  行号: 64-94
+  内容: lddir 三级 + ldpte 叶子 → tlbfill 填入 TLB
+  ────────────────────────────────────────
+  #: 4.6
+  文件: hal/loongarch/hal_tlbrefill.S
+  行号: 95-103
+  内容: 无效路径：填入 V=0 的 TLB 项 → ertn → 触发 PIL/PIS 异常
+
+  ** 关键指令：
+     lddir rd, rj, level  从 rj(页表PA) 读 PTE（level=3/2/1 层）
+     ldpte rd, level      从 rj(叶子页表PA) 读 PTE 到 TLBRELO（level=0）
+     tlbfill              将 TLBREHI+TLBRELO0/1 写入 TLB 随机项
+
+  ** RISC-V 无对应文件：RISC-V 硬件自动 walk Sv39 页表，TLB miss 时 CPU 自己填
+  TLB。
+     内核不需要写 refill handler。
+
+  ---
+  第 5 轮：缺页异常处理（PIL/PIS → kernelvec/usertrap）
+
+  ┌─────┬──────────────────────┬───────┬────────────────────────────────────┐
+  │  #  │         文件         │ 行号  │                内容                │
+  ├─────┼──────────────────────┼───────┼────────────────────────────────────┤
+  │ 5.1 │ hal/loongarch/hal_kv │ 16-13 │ kernelvec：栈溢出检测 +            │
+  │     │ ec.S                 │ 0     │ 正常内核异常处理路径               │
+  ├─────┼──────────────────────┼───────┼────────────────────────────────────┤
+  │     │                      │       │ usertrap()：用户态异常入口，第     │
+  │ 5.2 │ kernel/trap.c        │ 37-93 │ 70-72 行调 vmfault()               │
+  │     │                      │       │ 处理懒分配缺页                     │
+  ├─────┼──────────────────────┼───────┼────────────────────────────────────┤
+  │ 5.3 │ kernel/vm.c          │ 585-6 │ vmfault()：COW/懒分配页面处理（用  │
+  │     │                      │ 25    │ 户态缺页）                         │
+  ├─────┼──────────────────────┼───────┼────────────────────────────────────┤
+  │ 5.4 │ hal/loongarch/hal_tr │ 28-91 │ uservec：load                      │
+  │     │ amp.S                │       │ kernel_sp（高地址栈），切换 PGDL   │
+  └─────┴──────────────────────┴───────┴────────────────────────────────────┘
+
+  理解链路：
+  用户态 TLB miss
+    → TLB refill 成功 → 透明恢复
+    → TLB refill 失败（V=0）→ PIL/PIS → uservec 不触发（因为 refill 失败在 TLB
+  refill 上下文）
+                                   → ertn 重试 → 硬件发现 V=0 TLB → PIL/PIS
+                                   → EENTRY → kernelvec（内核态）或
+  uservec（用户态）
+
+  内核态 TLB miss（高地址栈）
+    → TLB refill 成功 → 透明恢复
+    → TLB refill 失败 → V=0 TLB → ertn → PIL/PIS → EENTRY → kernelvec
+    → kernelvec 检测到是栈 guard → hal_stack_overflow_panic
+
+  ---
+  第 6 轮：两架构完整对比
+
+  ┌──────────┬──────────┬─────────────────────────┬─────────────────────────┐
+  │   维度   │  RISC-V  │        LoongArch        │        关键文件         │
+  ├──────────┼──────────┼─────────────────────────┼─────────────────────────┤
+  │ 页表级数 │ 3 (Sv39) │ 4                       │ hal/*/arch.h:PT_LEVELS  │
+  ├──────────┼──────────┼─────────────────────────┼─────────────────────────┤
+  │ 硬件/软  │ 硬件自动 │ 软件 lddir/ldpte        │ hal/loongarch/hal_tlbre │
+  │ 件 walk  │          │                         │ fill.S                  │
+  ├──────────┼──────────┼─────────────────────────┼─────────────────────────┤
+  │ TLB 刷新 │ sfence.v │ invtlb 0, $r0, $r0      │ hal/*/arch.h            │
+  │          │ ma       │                         │                         │
+  ├──────────┼──────────┼─────────────────────────┼─────────────────────────┤
+  │ PGD      │ 只有     │ PGDL(低)+PGDH(高)+PGD(  │ hal/loongarch/arch.h:27 │
+  │ 寄存器   │ satp     │ 合并读)                 │ -29                     │
+  ├──────────┼──────────┼─────────────────────────┼─────────────────────────┤
+  │ 直接映射 │ 无       │ DMW0（VA[63:60]=0       │ kernel/vm.c:133         │
+  │          │          │ 恒等映射）              │                         │
+  ├──────────┼──────────┼─────────────────────────┼─────────────────────────┤
+  │ 陷阱返回 │ sret/mre │ ertn                    │ hal/*/hal_tramp.S       │
+  │          │ t        │                         │                         │
+  ├──────────┼──────────┼─────────────────────────┼─────────────────────────┤
+  │ 内核栈位 │ MAXVA    │ 0xFFFFFFFFFFF... 高地址 │ hal/*/memlayout.h       │
+  │ 置       │ 下方     │                         │                         │
+  ├──────────┼──────────┼─────────────────────────┼─────────────────────────┤
+  │          │ walk()   │ walk() +                │                         │
+  │ KSTACK   │ 在用户   │ hal_pagetable_va_valid  │ kernel/vm.c:192         │
+  │ 映射     │ VA       │ 扩展                    │                         │
+  │          │ 范围内   │                         │                         │
+  └──────────┴──────────┴─────────────────────────┴─────────────────────────┘
+
+  ---
+  总阅读顺序
+
+  第 1 轮  1.1 → 1.2 → 1.3            (PTE 格式基础)
+  第 2 轮  2.1 → 2.2 → 2.3 → 2.4     (walk 算法)
+  第 3 轮  3.1 → 3.2 → 3.3 → 3.4 → 3.5  (启动时的页表构建)
+  第 4 轮  4.1 → 4.2 → 4.3 → 4.4 → 4.5 → 4.6  (TLB refill ★ 当前问题关键)
+  第 5 轮  5.1 → 5.2 → 5.3            (缺页异常处理)
+  第 6 轮  上述文件重读，对比两个 arch.h 和两个 memlayout.h
+
+  第 4 轮（TLB refill）是排查当前 panic 最重要的部分——panic 输出
+  sp=0xFFFFFFFFFFFFEFD0, badv=0xFFFFFFFFFFFFEFF8，说明有效栈地址触发了
+  PIL/PIS，意味着 TLB refill 没有成功为这个地址填入有效 TLB 项。注意力应集中在
+  lddir 是否成功找到了页表中的 PTE。
+
+
