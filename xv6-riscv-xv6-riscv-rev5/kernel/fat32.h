@@ -1,4 +1,4 @@
-// FAT32 on-disk structures (little-endian, short 8.3 names only).
+// FAT32 on-disk structures (little-endian).
 // Reference: Microsoft Extensible Firmware Initiative FAT32 File System Specification v1.03
 
 // ---- BPB (BIOS Parameter Block) — boot sector offsets ----
@@ -51,6 +51,18 @@ struct fat32_dirent {
   uint   DIR_FileSize;        // 0x1C: file size in bytes
 } __attribute__((packed));
 
+// ---- FAT32 LFN (Long File Name) directory entry (32 bytes) ----
+struct fat32_lfn {
+  uchar  seq;           // 0x00: sequence number (1..N), last entry OR-ed with 0x40
+  ushort name1[5];      // 0x01: unicode chars 1-5  (UTF-16LE)
+  uchar  attr;          // 0x0B: ATTR_LONG_NAME (0x0F)
+  uchar  type;          // 0x0C: always 0 for LFN
+  uchar  checksum;      // 0x0D: checksum of the associated short name
+  ushort name2[6];      // 0x0E: unicode chars 6-11
+  ushort reserved;      // 0x1A: must be 0
+  ushort name3[2];      // 0x1C: unicode chars 12-13
+} __attribute__((packed));
+
 // Directory attribute bits
 #define ATTR_READ_ONLY  0x01
 #define ATTR_HIDDEN     0x02
@@ -59,6 +71,9 @@ struct fat32_dirent {
 #define ATTR_DIRECTORY  0x10
 #define ATTR_ARCHIVE    0x20
 #define ATTR_LONG_NAME  (ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID)
+
+// LFN sequence flags
+#define LFN_LAST        0x40   // bit set on the last (first-in-order) LFN entry
 
 // ---- FAT32 cluster values ----
 #define FAT32_EOC_MIN   0x0FFFFFF8   // minimum EOC (end of cluster chain)
