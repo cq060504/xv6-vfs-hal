@@ -1,5 +1,8 @@
 // LoongArch 16550a UART driver.
-// LSR polling and FIFO setup verified reliable on QEMU la464.
+// TX uses LSR polling (QEMU 8.2.2 never delivers UART interrupts to the
+// CPU, so the RISC-V-style interrupt-driven hal_console_write cannot work
+// here — verified empirically).  RX is drained by hal_console_intr(),
+// which clockintr() calls on every timer tick.
 
 #include "types.h"
 #include "hal/hal.h"
@@ -103,4 +106,10 @@ hal_console_intr(void (*handler)(int))
       break;
     handler(c);
   }
+}
+
+void
+hal_console_poll(void (*handler)(int))
+{
+  hal_console_intr(handler);
 }

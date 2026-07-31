@@ -21,8 +21,11 @@
 #define _HAL_LOONGARCH_MEMLAYOUT_H_
 
 // QEMU puts 16550a UART registers here in physical memory.
+// UART0_IRQ: serial irq goes to PCH-PIC input 2 (VIRT_UART_IRQ(66)-VIRT_GSI_BASE(64)),
+// but PCH-PIC htmsi_vector[] resets to all zeros, so every input is routed to
+// PCH-PIC output 0 = EIOINTC line 0.  Hence UART0_IRQ is EIOINTC line 0.
 #define UART0 0x1FE001E0L
-#define UART0_IRQ 31
+#define UART0_IRQ 0
 
 // virtio on LoongArch is PCI-based, not MMIO.
 // VIRTIO0 provides the base for compatibility; actual access goes through PCI.

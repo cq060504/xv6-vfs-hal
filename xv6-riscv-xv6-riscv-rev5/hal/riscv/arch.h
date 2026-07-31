@@ -381,6 +381,15 @@ static inline void   hal_cpu_idle(void)       { asm volatile("wfi"); }
 
 #define hal_pte_encode_perm(perm) (perm)
 
+//check leaf PTEs for RISC-V by R/W/X
+#ifndef __ASSEMBLER__
+static inline int
+hal_pte_is_leaf(pte_t pte)
+{
+  return (pte & (PTE_R|PTE_W|PTE_X)) != 0;
+}
+#endif
+
 // shift a physical address to the right place for a PTE.
 #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
 #define PTE2PA(pte) (((pte) >> 10) << 12)

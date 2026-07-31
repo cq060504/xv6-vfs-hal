@@ -402,6 +402,13 @@ hal_pte_decode_perm(pte_t pte)
 
 #define PTE_FLAGS(pte) hal_pte_decode_perm(pte)
 
+// Check if a PTE is a leaf by PTE_P (physical page exists) bit.
+static inline int
+hal_pte_is_leaf(pte_t pte)
+{
+  return (pte &  PTE_P) != 0;
+}
+
 // ============================================================
 //  Page table walk macros (same algorithm as RISC-V Sv39)
 // ============================================================

@@ -184,11 +184,14 @@ clockintr()
   // of a second.
   hal_set_timer(hal_get_time() + 1000000);
 
-#ifdef ARCH_loongarch
-  // LoongArch QEMU UART RX interrupt may not fire reliably.
-  // Poll the UART on each timer tick so keyboard input works.
-  hal_console_intr(consoleintr);
-#endif
+
+  // QEMU 8.2.2 does not deliver UART interrupts to the CPU
+  // (verified: 16550 IIR pending, PCH-PIC asserts, but EIOINTC
+  // COREISR never latches; removing this poll makes keyboard
+  // input dead — verified empirically).  Poll the UART on each
+  // timer tick so keyboard input works.
+  hal_console_poll(consoleintr);
+
 }
 
 // check if it's an external interrupt or software interrupt,

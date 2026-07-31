@@ -278,8 +278,8 @@ uvmcreate()
   return pagetable;
 }
 
-// Remove npages of mappings starting from va. va must be
-// page-aligned. It's OK if the mappings don't exist.
+// Remove npages of mappings starting from va, specially free leaf page table.
+// va must be page-aligned. It's OK if the mappings don't exist. 
 // Optionally free the physical memory.
 void
 uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
@@ -349,7 +349,7 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   return newsz;
 }
 
-// Recursively free page-table pages.
+// Recursively free non-leaf page-table pages.
 // All leaf mappings must already have been removed.
 void
 freewalk(pagetable_t pagetable)
@@ -358,19 +358,10 @@ freewalk(pagetable_t pagetable)
   for(int i = 0; i < 512; i++){
     pte_t pte = pagetable[i];
     if(pte & PTE_V) {
-#ifdef ARCH_loongarch
-      // LoongArch: non-leaf PTEs have PTE_V but no MAT bit.
-      // Leaf PTEs always have PTE_V_CACHE (V+MAT) set.
-      // This distinguishes them: non-leaf has V=1,MAT=0; leaf has V=1,MAT=1.
-      if(pte & PTE_MAT) {
+      
+      if(hal_pte_is_leaf(pte))
         panic("freewalk: leaf");
-      }
-#else
-      // RISC-V: non-leaf PTEs have V=1 but no R/W/X flags.
-      if((pte & (PTE_R|PTE_W|PTE_X)) != 0){
-        panic("freewalk: leaf");
-      }
-#endif
+
       uint64 child = PTE2PA(pte);
       freewalk((pagetable_t)child);
       pagetable[i] = 0;
