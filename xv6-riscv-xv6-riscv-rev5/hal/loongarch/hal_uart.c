@@ -1,8 +1,17 @@
 // LoongArch 16550a UART driver.
-// TX uses LSR polling (QEMU 8.2.2 never delivers UART interrupts to the
-// CPU, so the RISC-V-style interrupt-driven hal_console_write cannot work
-// here — verified empirically).  RX is drained by hal_console_intr(),
-// which clockintr() calls on every timer tick.
+//
+// Interrupts: QEMU 8.2.2 does NOT deliver UART interrupts to the CPU.
+// The 16550→PCH-PIC→EIOINTC chain is broken (verified empirically:
+// 16550 IIR shows pending, PCH-PIC is unmasked, but EIOINTC COREISR
+// never latches and ESTAT.IS12 never fires).  Therefore both TX and RX
+// use only LSR polling — no interrupt-driven I/O is possible at guest
+// level on this QEMU version.
+//
+// TX: hal_putchar() spin-waits on LSR_TX_IDLE before writing THR.
+//     hal_console_write() loops over hal_putchar().
+// RX: hal_console_intr() polls LSR_RX_READY in a drain loop.
+//     clockintr() calls hal_console_poll() each timer tick, which
+//     delegates to hal_console_intr() to drain any buffered input.
 
 #include "types.h"
 #include "hal/hal.h"
@@ -59,7 +68,9 @@ hal_console_init(void)
   // Enable and reset FIFOs.
   WriteReg(FCR, FCR_FIFO_ENABLE | FCR_FIFO_CLEAR);
 
-  // Enable receive interrupts so hal_console_intr fires on input.
+  // Enable RX interrupt in the 16550 IER so IIR reflects pending state.
+  // Interrupt will NOT reach the CPU on QEMU 8.2.2; actual RX is via
+  // hal_console_poll() → hal_console_intr() → LSR polling on each tick.
   WriteReg(IER, IER_RX_ENABLE);
 }
 

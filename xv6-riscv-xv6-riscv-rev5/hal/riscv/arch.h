@@ -361,6 +361,13 @@ static inline void   hal_intr_off(void)       { intr_off(); }
 static inline int    hal_intr_get(void)       { return intr_get(); }
 static inline void   hal_cpu_idle(void)       { asm volatile("wfi"); }
 
+//riscv had band tarpframe by TRAPFRAME VA maping used pagetable
+static inline void
+hal_trap_bind_user_frame(uint64 trapframe_kva)
+{
+  (void)trapframe_kva;
+}
+
 #endif // __ASSEMBLER__
 
 #define PGSIZE 4096 // bytes per page

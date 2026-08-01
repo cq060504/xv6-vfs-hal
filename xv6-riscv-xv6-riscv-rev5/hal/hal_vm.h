@@ -11,6 +11,19 @@ void hal_tlb_flush_all(void);
 // --- judge whether a PTE is a leaf PTE for freeing page table pages ----
 int hal_pte_is_leaf(pte_t pte);
 
+//--- riscv:trampoline map to user space ,loongarch uses DMW0 ---
+int hal_vm_map_trampoline(pagetable_t pagetable, uint64 trampoline_pa,  uint64 trapframe_pa);
+
+void hal_vm_unmap_trampoline(pagetable_t pagetable);
+
+//LA avoid illegal access to low memory ---
+int hal_vm_reserve_user_low(pagetable_t pagetable, uint64 *initial_sz);
+
+
+// Boot-time kernel address-space construction and per-hart activation.
+void hal_vm_map_kernel(pagetable_t kpgtbl);
+void hal_vm_enable(pagetable_t kpgtbl);
+
 // ---- Page table constants (platform-defined) ----
 // HAL_PGSIZE, HAL_PGSHIFT, PTE flags are provided by arch.h.
 

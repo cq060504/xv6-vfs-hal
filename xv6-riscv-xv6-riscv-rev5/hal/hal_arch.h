@@ -39,4 +39,7 @@ uint64 hal_read_ra(void);
 // ---- CPU idle (platform-specific wait-for-interrupt) ----
 void hal_cpu_idle(void);
 
+// ---- Make the current process trapframe discoverable by the platform before returning to userer mode.-
+void hal_trap_bind_user_frame(uint64 trapframe_kva);
+
 #endif

@@ -236,6 +236,21 @@ static inline void w_rvacfg(uint64 x) {
   asm volatile("csrwr %0, 0x1F" : "+r"(x));
 }
 
+// --- PWCL (0x1C): Page Walk Controller Low ---
+static inline void w_pwcl(uint64 x) {
+  asm volatile("csrwr %0, 0x1C" : "+r"(x));
+}
+
+// --- PWCH (0x1D): Page Walk Controller High ---
+static inline void w_pwch(uint64 x) {
+  asm volatile("csrwr %0, 0x1D" : "+r"(x));
+}
+
+// --- TLBRENTRY (0x88): TLB refill entry point ---
+static inline void w_tlbrentry(uint64 x) {
+  asm volatile("csrwr %0, 0x88" : "+r"(x));
+}
+
 // --- DMW0 (0x180): Direct Mapping Window 0 ---
 static inline void w_dmw0(uint64 x) {
   asm volatile("csrwr %0, 0x180" : "+r"(x));
@@ -518,5 +533,16 @@ static inline void   hal_tlb_flush_all(void)    { sfence_vma(); }
 static inline void   hal_intr_on(void)          { intr_on(); }
 static inline void   hal_intr_off(void)         { intr_off(); }
 static inline int    hal_intr_get(void)         { return intr_get(); }
+
+static inline void w_ksave1(uint64 x)
+{
+  asm volatile("csrwr %0, 0x31" : "+r"(x));
+}
+
+static inline void
+hal_trap_bind_user_frame(uint64 trapframe_kva)
+{
+  w_ksave1(trapframe_kva);
+}
 
 #endif // __ASSEMBLER__

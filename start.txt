@@ -1,0 +1,268 @@
+ 一、在 main() 之前发生了什么
+
+  硬件的入口点
+
+  QEMU -bios (LoongArch) 或 QEMU -kernel (RISC-V) →
+    加载内核映像到物理地址
+    → 每个 CPU 核心从固定地址开始执行
+
+  LoongArch：_entry（hal/loongarch/hal_entry.S）
+
+  _linker.ld:_ →  ENTRY(_entry)                    ← 入口标号
+    .text.entry 段 → 链接到 VMA 0x1C000000          ← QEMU -bios 加载点
+
+  _entry 做的事：
+    ① 设置栈指针
+       la.abs $sp, stack0              ← 加载 stack0 数组的地址
+       li.d   $t0, 4096
+       csrrd  $t1, 0x20               ← CPUID CSR
+       addi.d $t1, $t1, 1             ← hart_id + 1
+       mul.d  $t0, $t0, $t1
+       add.d  $sp, $sp, $t0           ← sp = &stack0 + (hart_id+1)*4096
+                                       ★ 每个 CPU 独占 4096 字节启动栈
+
+    ② 跳转到 start() (hal_start.c)
+       此时运行环境：
+         CRMD.DA=1    直�地址翻译（VA=PA）
+         CRMD.PG=0    页表关闭
+         PLV=0        内核态
+         所有低地址可以直接用物理地址访问
+
+  RISC-V：_entry（hal/riscv/hal_entry.S）
+
+  _linker.ld:_ →  ENTRY(_entry)
+    .text.entry 段 → 链接到 VMA 0x80000000
+
+  _entry 做的事：
+    la sp, stack0                       ← 加载 stack0 数组基地址
+    sp = stack0 + (hart_id+1) * 4096    ← 每个 CPU 独占 4096 字节启动栈
+    call start                          ← 跳转到 start() (hal_start.c)
+                                        此时：Machine 模式、无页表
+
+  ---
+  二、start() 函数
+  
+  LoongArch：start()（hal/loongarch/hal_start.c:27-75）
+
+  start() 分叉——hart 0 做初始化，hart 1/2/... 等待
+
+  ━━━━━━ hart 0 ━━━━━━
+    ① 写 tp = hart_id（后面 cpuid() 用 tp 获取）
+
+    ② 输出 "start: begin" 到串口（直接 MMIO 写 UART 寄存器，此时没 printf）
+
+    ③ 复制 .data 从 flash 到 RAM
+       flash (LMA = _data_lma): .data 的初始值
+       RAM   (VMA = _data_start): .data 的实际位置 0x00400000
+       原因：LoongArch 内核代码在 flash(0x1C000000)，是只读的。
+            全局变量必须在 RAM(0x00400000) 中才能写。
+
+    ④ 清零 .bss（未初始化的全局变量变零）
+
+    ⑤ 写 boot_done 魔数（通知 secondary harts）
+
+    ⑥ 输出 "start: calling main"
+
+  ━━━━━━ hart 1/2/... ━━━━━━
+    ① 写 tp = hart_id
+
+    ② 循环等 boot_done != 魔数（自旋直到 hart 0 初始化完毕）
+       注意：此时还没开 MMU，所有地址用 DA=1 物理直接访问
+
+  ━━━━━━ 所有 hart ━━━━━━
+    ③ 写 EENTRY = kernelvec（内核异常向量）
+       原因：在 main() 里 trapinithart() 也会再设一次，但 start() 先设
+             是为了 main() 运行时如果有异常可以处理
+             注意：TLBRENTRY 没在这里设——tlb_refill_entry 在 kvminithart() 里设
+
+    ④ 调用 main()
+
+  RISC-V：start()（hal/riscv/hal_start.c:17-51）
+
+  start() 在 Machine 模式执行（最高权限）
+
+    ① mstatus.MPP = Supervisor → mret 后进入 S 模式
+    ② mepc = main → mret 后跳到 main()
+    ③ w_satp(0) → 禁用分页
+    ④ medeleg/mideleg → 把所有异常/中断委托给 S 模式
+    ⑤ PMP 配置 → 允许 S 模式访问全部物理内存
+    ⑥ timerinit() → 配置定时器
+    ⑦ w_tp(hart_id) → tp = hart ID
+    ⑧ mret → 切到 S 模式，PC = main()
+
+  RISC-V 的 start() 比 LoongArch 复杂，因为涉及 M→S 特权级切换。
+
+  ---
+  三、main() 函数（hart 0 路径）
+  
+  void main() {
+      if(cpuid() == 0) {
+          // ===== 启动阶段（仅 hart 0） ===== 共 20 个初始化步骤
+
+  第 1 步：串口初始化（12-16 行）
+
+  consoleinit();      // 初始化 UART 硬件
+  printfinit();       // 初始化 printf 锁
+  printf("xv6 kernel is booting\n");
+
+  此时 MMU 未开启，所有地址通过 DMW0（LA）或直接物理（RV）访问。
+
+  第 2 步：物理内存分配器（17 行）
+
+  kinit();            // 初始化 kalloc/kfree 内存池
+
+  kinit() 把 end（内核镜像结束）到 PHYSTOP 之间的空闲物理页加入空闲链表。之后 kalloc() 就是分配 4096 字节对齐的物理页。
+
+  第 3 步：内核页表（18-19 行）
+
+  kvminit();          // 创建 kernel_pagetable（调用 kvmmake）
+                      //   → 映射 UART、PLIC、内核代码、RAM、TRAMPOLINE
+                      //   → proc_mapstacks → 映射 64 个内核栈
+
+  kvminithart();      // ★ 开启 MMU！
+                      //   → 写 PGDL、PGDH
+                      //   → 配置 DMW0
+                      //   → 设 RVACFG=8（40 位有效 VA）
+                      //   → 设 TLBRENTRY
+                      //   → CRMD.PG=1：页表翻译启动！
+
+  从 kvminithart() 返回后，所有内核低地址（VA[63:60]=0）通过 DMW0 恒等映射，内核高地址栈通过 PGDH → lddir → TLB 翻译。
+
+  第 4 步：进程 + 中断（20-24 行）
+
+  procinit();              // 初始化 proc[] 数组：锁、state=UNUSED、kstack=KSTACK(i)
+  trapinit();              // 初始化 ticks 锁
+  trapinithart();          // w_stvec(kernelvec) → 设置内核异常向量
+  hal_irq_init();          // 初始化 PLIC/EIOINTC 中断控制器
+  hal_irq_hart_init();     // 允许当前 hart 接收设备中断
+
+  第 5 步：文件系统（25-29 行）
+
+  binit();                  // 初始化缓冲区缓存（磁盘 I/O 的中间层）
+  iinit();                  // 初始化 inode 表
+  vfs_init();               // 注册 xv6fs、ext2、fat32 文件系统
+  fileinit();               // 初始化文件描述符表
+  virtio_disk_init();       // 初始化磁盘驱动（MMIO/PIC，取决于架构）
+
+  第 6 步：定时器 + 第一个进程（30-31 行）
+
+  hal_timer_init();         // 启动定时器中断（~10ms 间隔）
+  userinit();               // 创建第一个进程（pid=1，运行 /init）
+
+  userinit() 调用 allocproc()：
+  - 分配 trapframe 页
+  - 创建用户页表
+  - 设置 context.ra = forkret
+  - 设置 context.sp = KSTACK(0) + 2*PGSIZE
+  - state = RUNNABLE
+
+  第 7 步：通知 secondary harts（32-34 行）
+
+  printf("main: userinit done, starting scheduler\n");
+  __sync_synchronize();     // 内存屏障：确保所有初始化写入对其他 harts 可见
+  started = 1;              // ★ secondary harts 跳出等待循环
+
+  hart 初始化（35-43 行）
+
+  } else {                   // ===== secondary harts =====
+      while(started == 0)    // 等 hart 0 初始化完毕
+          ;
+      printf("hart %d starting\n", cpuid());
+      kvminithart();         // 开启自己核心的 MMU
+      trapinithart();        // 设置自己核心的异常向量
+      hal_irq_hart_init();   // 开启自己核心的设备中断
+  }
+
+  secondary harts 不需要重复 kvminit/procinit/binit/userinit——那些是全局的一次性工作。只需要 per-hart 的初始化（MMU、陷阱）。
+
+  最后一行（45 行）
+
+      scheduler();            // ★ 所有 hart 进入调度器循环，永不返回
+  }
+
+  ---
+  完整启动流程图
+  
+  ┌─────────────────────────────────────────────────────────────┐
+  │                      硬件上电/复位                          │
+  └──────────────┬──────────────────────────────────────────────┘
+                 │
+                 ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │ _entry (hal_entry.S)                                       │
+  │   设启动栈 sp = &stack0[hart_id]                            │
+  │   → start()                                                │
+  └──────────────┬──────────────────────────────────────────────┘
+                 │
+          ┌──────┴──────┐
+          ▼              ▼
+      ┌────────┐    ┌──────────────┐
+      │ hart 0 │    │ hart 1,2,... │
+      └───┬────┘    └──────┬───────┘
+          │                │
+    复制.data到RAM     等 boot_done 魔数
+    清零.bss           w_eentry(kernelvec)
+    写boot_done魔数
+          │                │
+     w_eentry(kernelvec)   │
+          │                │
+          ├────────────────┴──────────────┐
+          │          main()                │
+          └───────────┬───────────────────┘
+                      │
+          ┌───────────┴───────────┐
+          ▼                       ▼
+      ┌────────┐             ┌───────────┐
+      │hart 0  │             │hart 1,2   │
+      └───┬────┘             └─────┬─────┘
+          │                        │
+    consoleinit/printfinit    while(started==0)
+    kinit                              │
+    kvminit                             │
+    kvminithart ★开MMU                  │
+    procinit                            │
+    trapinit/trapinithart               │
+    hal_irq_init/hart_init              │
+    binit/iinit/vfs_init                │
+    fileinit                            │
+    virtio_disk_init                    │
+    hal_timer_init                      │
+    userinit ★创建第一个进程             │
+    started = 1                         │
+          │                             │
+          ├─────────────────────────────┤
+          │    kvminithart ★开MMU         │
+          │    trapinithart               │
+          │    hal_irq_hart_init          │
+          ├─────────────────────────────┘
+          │
+          └─── scheduler() ← 所有 hart 进入，永不返回
+          ┌───────────┴───────────┐
+          ▼                       ▼
+      ┌────────┐             ┌───────────┐
+      │hart 0  │             │hart 1,2   │
+      └───┬────┘             └─────┬─────┘
+          │                        │
+    consoleinit/printfinit    while(started==0)
+    kinit                              │
+    kvminit                             │
+    kvminithart ★开MMU                  │
+    procinit                            │
+    trapinit/trapinithart               │
+    hal_irq_init/hart_init              │
+    binit/iinit/vfs_init                │
+    fileinit                            │
+    virtio_disk_init                    │
+    hal_timer_init                      │
+    userinit ★创建第一个进程             │
+    started = 1                         │
+          │                             │
+          ├─────────────────────────────┤
+          │    kvminithart ★开MMU         │
+          │    trapinithart               │
+          │    hal_irq_hart_init          │
+          ├─────────────────────────────┘
+          │
+          └─── scheduler() ← 所有 hart 进入，永不返回
+
+  从 scheduler() 开始，系统正式进入"进程世界"——不再有启动代码，只有进程调度、陷阱处理和上下文切换的无限循环。
