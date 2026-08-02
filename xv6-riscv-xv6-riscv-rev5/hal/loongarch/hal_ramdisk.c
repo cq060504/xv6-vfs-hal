@@ -1,7 +1,7 @@
-// LoongArch RAM-disk virtio replacement.
+// LoongArch RAM disk driver.
 //
-// LoongArch QEMU virt uses PCI-based virtio (not MMIO like RISC-V).
-// QEMU's loader places three writable images in reserved low RAM before boot.
+// QEMU's loader places three writable images in reserved low RAM before
+// boot. I/O completes synchronously (no interrupts needed).
 
 #include "types.h"
 #include "hal/hal.h"
@@ -44,18 +44,18 @@ ramdisk_for_dev(uint dev)
 }
 
 void
-virtio_disk_init(void)
+hal_disk_init(void)
 {
   for (uint i = 0; i < NRAMDISK; i++)
     ramdisk_init(i);
 }
 
 void
-virtio_disk_rw(struct buf *b, int write)
+hal_disk_rw(struct buf *b, int write)
 {
   struct ramdisk *rd = ramdisk_for_dev(b->dev);
   if (b->blockno >= RAMDISK_STRIDE / BSIZE)
-    panic("virtio_disk_rw: beyond ramdisk");
+    panic("hal_disk_rw: beyond ramdisk");
   uint64 offset = b->blockno * BSIZE;
 
   acquire(&rd->lock);
@@ -72,7 +72,7 @@ virtio_disk_rw(struct buf *b, int write)
 }
 
 void
-virtio_disk_intr(void)
+hal_disk_intr(void)
 {
   // RAM disk completes I/O synchronously.
 }

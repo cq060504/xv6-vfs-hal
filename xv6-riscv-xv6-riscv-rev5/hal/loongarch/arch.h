@@ -9,33 +9,46 @@
 //  - Only 2 privilege levels: PLV0 (kernel) and PLV3 (user)
 //  - Exception return: ertn (not sret/mret)
 
-#ifndef __ASSEMBLER__
+// ============================================================
+//  CSR register map (visible to both C and assembly)
+// ============================================================
+#define CSR_CRMD      0x0    // Current Mode: PLV[1:0], IE[2], DA[3], PG[4]
+#define CSR_PRMD      0x1    // Previous Mode: PPLV[1:0], PIE[2]
+#define CSR_ECFG      0x4    // Exception Config: LIE[12:0], VS[18:16]
+#define CSR_ESTAT     0x5    // Exception Status: IS[12:0], Ecode[21:16]
+#define CSR_ERA       0x6    // Exception Return Address (= sepc)
+#define CSR_BADV      0x7    // Bad Virtual Address (= stval)
+#define CSR_EENTRY    0xC    // Exception Entry Point (= stvec)
+#define CSR_TLBIDX    0x10   // TLB Index
+#define CSR_TLBEHI    0x11   // TLB Entry High
+#define CSR_TLBELO0   0x12   // TLB Entry Low 0 (direct access)
+#define CSR_TLBELO1   0x13   // TLB Entry Low 1 (direct access)
+#define CSR_PGDL      0x19   // Page Table Base (low half addr space)
+#define CSR_PGDH      0x1A   // Page Table Base (high half addr space)
+#define CSR_PGD       0x1B   // Selected page table base for the faulting VA
+#define CSR_PWCL      0x1C   // Page Walk Controller Low
+#define CSR_PWCH      0x1D   // Page Walk Controller High
+#define CSR_RVACFG    0x1F   // Reduced Virtual Address Configuration
+#define CSR_CPUID     0x20   // Core ID (= mhartid)
+#define CSR_KSAVE0    0x30   // Kernel Save 0
+#define CSR_KSAVE1    0x31   // Kernel Save 1 (trapframe KVA)
+#define CSR_KSAVE2    0x32   // Kernel Save 2
+#define CSR_KSAVE3    0x33   // Kernel Save 3
+#define CSR_KSAVE4    0x34   // Kernel Save 4
+#define CSR_TCFG      0x41   // Timer Config: enable + period
+#define CSR_TVAL      0x42   // Timer Value: countdown
+#define CSR_TICLR     0x44   // Timer Interrupt Clear
+#define CSR_LLBCTL    0x60   // Load-Link / Store-Conditional ctl
+#define CSR_TLBRENTRY 0x88   // TLB refill entry point
+#define CSR_TLBRBADV  0x89   // TLB refill bad virtual address
+#define CSR_TLBRSAVE  0x8b   // TLB refill scratch save
+#define CSR_TLBRELO0  0x8c   // TLB refill entry low 0
+#define CSR_TLBRELO1  0x8d   // TLB refill entry low 1
+#define CSR_TLBREHI   0x8e   // TLB refill entry high
+#define CSR_DMW0      0x180  // Direct Mapping Window 0
+#define CSR_DMW1      0x181  // Direct Mapping Window 1
 
-// ============================================================
-//  CSR register map
-// ============================================================
-#define CSR_CRMD    0x0    // Current Mode: PLV[1:0], IE[2], DA[3], PG[4]
-#define CSR_PRMD    0x1    // Previous Mode: PPLV[1:0], PIE[2]
-#define CSR_ECFG    0x4    // Exception Config: LIE[12:0], VS[18:16]
-#define CSR_ESTAT   0x5    // Exception Status: IS[12:0], Ecode[21:16]
-#define CSR_ERA     0x6    // Exception Return Address (= sepc)git
-#define CSR_BADV    0x7    // Bad Virtual Address (= stval)
-#define CSR_EENTRY  0xC    // Exception Entry Point (= stvec)
-#define CSR_TLBIDX  0x10   // TLB Index
-#define CSR_TLBEHI  0x11   // TLB Entry High
-#define CSR_TLBELO0 0x12   // TLB Entry Low 0
-#define CSR_TLBELO1 0x13   // TLB Entry Low 1
-#define CSR_PGDL    0x19   // Page Table Base (low half addr space)
-#define CSR_PGDH    0x1A   // Page Table Base (high half addr space)
-#define CSR_PGD     0x1B   // Selected page table base for the faulting VA
-#define CSR_RVACFG  0x1F   // Reduced Virtual Address Configuration
-#define CSR_CPUID   0x20   // Core ID (= mhartid)
-#define CSR_TCFG    0x41   // Timer Config: enable + period
-#define CSR_TVAL    0x42   // Timer Value: countdown
-#define CSR_TICLR   0x44   // Timer Interrupt Clear
-#define CSR_LLBCTL  0x60   // Load-Link / Store-Conditional ctl
-#define CSR_DMW0    0x180  // Direct Mapping Window 0
-#define CSR_DMW1    0x181  // Direct Mapping Window 1
+#ifndef __ASSEMBLER__
 
 // ============================================================
 //  CRMD bit definitions
@@ -305,11 +318,6 @@ static inline uint64 r_sp(void) {
   return x;
 }
 
-static inline uint64 r_ra(void) {
-  uint64 x;
-  asm volatile("or %0, $r1, $r0" : "=r"(x));
-  return x;
-}
 
 // ============================================================
 //  ESTAT → RISC-V scause conversion (for trap.c compatibility)
@@ -504,16 +512,11 @@ static inline uint64 hal_read_scause(void)      { return estat_to_scause(r_estat
 static inline uint64 hal_read_stval(void)       { return r_badv(); }
 
 // --- Trap vector ---
-static inline uint64 hal_read_stvec(void)       { return r_eentry(); }
 static inline void   hal_write_stvec(uint64 x)   { w_eentry(x); }
 
 // --- Page table base ---
 static inline uint64 hal_read_satp(void)        { return r_pgdl(); }
 static inline void   hal_write_satp(uint64 x)    { w_pgdl(x); }
-
-// --- SP and RA ---
-static inline uint64 hal_read_sp(void)          { return r_sp(); }
-static inline uint64 hal_read_ra(void)          { return r_ra(); }
 
 // --- Timer ---
 // LoongArch Stable Counter (rdtime.d) provides a monotonically increasing
@@ -524,6 +527,8 @@ static inline uint64 r_stable_counter(void) {
   return x;
 }
 static inline uint64 hal_get_time(void)         { return r_stable_counter(); }
+// LA uses a periodic timer (TCFG_PERIOD); hal_set_timer only clears the
+// current interrupt to re-arm. The 'next' parameter is ignored.
 static inline void   hal_set_timer(uint64 next)  { (void)next; w_ticlr(1); }
 
 // --- TLB ---

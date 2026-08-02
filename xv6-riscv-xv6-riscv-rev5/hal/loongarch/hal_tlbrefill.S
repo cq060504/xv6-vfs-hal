@@ -8,23 +8,25 @@
 #   User:   2*PGSIZE <= VA < MAXVA            (low half, via PGDL)
 #   Kernel: KSTACK_REGION_BOTTOM <= VA < KSTACK_TOP  (high half, via PGDH)
 
+#include "arch.h"
+
 .section .tlbrefill, "ax"
 .balign 4096
 .globl tlb_refill_entry
 tlb_refill_entry:
         # Use TLBRSAVE as the single scratch save slot; do not touch ERA/PRMD.
-        csrwr   $t0, 0x8b              # TLBRSAVE
+        csrwr   $t0, CSR_TLBRSAVE
 
         # TLBREHI.VPPN is set by hardware, but PS is software-owned.
-        csrrd   $t0, 0x8e              # TLBREHI
+        csrrd   $t0, CSR_TLBREHI
         srli.d  $t0, $t0, 6
         slli.d  $t0, $t0, 6
         ori     $t0, $t0, 12
-        csrwr   $t0, 0x8e
+        csrwr   $t0, CSR_TLBREHI
 
         # --- VA validation ---
         # Accept: user [2*PGSIZE, MAXVA) or kernel [KSTACK_REGION_BOTTOM, KSTACK_TOP)
-        csrrd   $t0, 0x89              # TLBRBADV
+        csrrd   $t0, CSR_TLBRBADV
 
         # Kernel addresses have bit 63 set (negative in signed comparison).
         blt     $t0, $r0, .Lchk_kern
@@ -32,7 +34,7 @@ tlb_refill_entry:
         # User address: must be in [2*PGSIZE, MAXVA).
         srli.d  $t0, $t0, 13           # reject VA < 2*PGSIZE
         beqz    $t0, .Ltlbr_invalid
-        csrrd   $t0, 0x89
+        csrrd   $t0, CSR_TLBRBADV
         srli.d  $t0, $t0, 38           # reject VA >= MAXVA
         bnez    $t0, .Ltlbr_invalid
         b       .Lrefill_ok
@@ -41,29 +43,29 @@ tlb_refill_entry:
         # Kernel address: must be in [KSTACK_REGION_BOTTOM, KSTACK_TOP).
         # KSTACK_REGION_BOTTOM = 0xFFFFFFFFFFF3F000
         # KSTACK_TOP          = 0xFFFFFFFFFFFFF000
-        csrwr   $t1, 0x32              # KSave2 = old $t1
+        csrwr   $t1, CSR_KSAVE2       # KSave2 = old $t1
         lu12i.w $t1, -193              # t1 = KSTACK_REGION_BOTTOM
         bltu    $t0, $t1, .Ltlbr_kern_bad
         lu12i.w $t1, -1               # t1 = KSTACK_TOP
         bgeu    $t0, $t1, .Ltlbr_kern_bad
-        csrrd   $t1, 0x32              # restore $t1
+        csrrd   $t1, CSR_KSAVE2       # restore $t1
         # fall through to page-table walk
 
 .Lrefill_ok:
         # PGD selects PGDL or PGDH from TLBRBADV in refill context.
-        csrrd   $t0, 0x1B              # PGD: selected root page-table PA
+        csrrd   $t0, CSR_PGD           # PGD: selected root page-table PA
 
         lddir   $t0, $t0, 3            # Dir2, VA[47:39]
         andi    $t0, $t0, 1
         beqz    $t0, .Ltlbr_invalid
-        csrrd   $t0, 0x1B
+        csrrd   $t0, CSR_PGD
         lddir   $t0, $t0, 3
         addi.d  $t0, $t0, -1
 
         lddir   $t0, $t0, 2            # Dir1, VA[38:30]
         andi    $t0, $t0, 1
         beqz    $t0, .Ltlbr_invalid
-        csrrd   $t0, 0x1B
+        csrrd   $t0, CSR_PGD
         lddir   $t0, $t0, 3
         addi.d  $t0, $t0, -1
         lddir   $t0, $t0, 2
@@ -72,7 +74,7 @@ tlb_refill_entry:
         lddir   $t0, $t0, 1            # Dir0, VA[29:21]
         andi    $t0, $t0, 1
         beqz    $t0, .Ltlbr_invalid
-        csrrd   $t0, 0x1B
+        csrrd   $t0, CSR_PGD
         lddir   $t0, $t0, 3
         addi.d  $t0, $t0, -1
         lddir   $t0, $t0, 2
@@ -84,18 +86,18 @@ tlb_refill_entry:
         ldpte   $t0, 1                 # odd page  -> TLBRELO1
         tlbfill
 
-        csrrd   $t0, 0x8b
+        csrrd   $t0, CSR_TLBRSAVE
         ertn
 
 .Ltlbr_kern_bad:
-        csrrd   $t1, 0x32              # restore $t1
+        csrrd   $t1, CSR_KSAVE2       # restore $t1
         # fall through to invalid path
 
 .Ltlbr_invalid:
         # Install an invalid matching entry so retry reaches the normal
         # PIL/PIS/PIF path instead of looping forever in TLB refill.
-        csrwr   $r0, 0x8c              # TLBRELO0
-        csrwr   $r0, 0x8d              # TLBRELO1
+        csrwr   $r0, CSR_TLBRELO0     # TLBRELO0
+        csrwr   $r0, CSR_TLBRELO1     # TLBRELO1
         tlbfill
-        csrrd   $t0, 0x8b
+        csrrd   $t0, CSR_TLBRSAVE
         ertn

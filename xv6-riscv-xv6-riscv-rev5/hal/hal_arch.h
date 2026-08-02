@@ -23,18 +23,11 @@ uint64 hal_read_scause(void);
 uint64 hal_read_stval(void);
 
 // ---- Trap vector ----
-uint64 hal_read_stvec(void);
 void   hal_write_stvec(uint64);
 
 // ---- Page table base ----
 uint64 hal_read_satp(void);
 void   hal_write_satp(uint64);
-
-// ---- Stack pointer ----
-uint64 hal_read_sp(void);
-
-// ---- Return address ----
-uint64 hal_read_ra(void);
 
 // ---- CPU idle (platform-specific wait-for-interrupt) ----
 void hal_cpu_idle(void);

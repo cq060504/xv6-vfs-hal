@@ -9,12 +9,10 @@ SECTIONS
    */
   . = 0x1c000000;
 
-  .text : {
+  .text.boot : {
     *(.text.entry)
-    *hal_entry.o(.text)
-    *hal_start.o(.text)
-    *hal_uart.o(.text)
   }
+  ASSERT(. <= 0x1c008000, ".text.boot overflow into .tlbrefill — reduce .text.entry size")
 
   /* TLB refill and trampoline live at fixed pages used by memlayout.h. */
   . = 0x1c008000;
@@ -31,7 +29,7 @@ SECTIONS
   }
 
   . = 0x1c00a000;
-  .text.rest : {
+  .text : {
     *(.text .text.*)
     PROVIDE(etext = .);
   }

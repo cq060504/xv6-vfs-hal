@@ -26,7 +26,7 @@ main()
     iinit();         // inode table
     vfs_init();      // VFS layer (register filesystems, no I/O)
     fileinit();      // file table
-    virtio_disk_init(); // emulated hard disk
+    hal_disk_init();     // emulated hard disk
     hal_timer_init();   // start timer after all init
     userinit();      // first user process (forkret handles fsinit + mount)
     printf("main: userinit done, starting scheduler\n");

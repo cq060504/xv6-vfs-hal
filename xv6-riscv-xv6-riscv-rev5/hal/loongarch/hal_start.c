@@ -15,6 +15,10 @@ void kernelvec();
 // scheduler context is suspended here, so the same page can be reused by the
 // non-returning stack-overflow panic path (see hal_kvec.S).
 __attribute__ ((aligned (16), section(".bootstack"))) char stack0[4096 * NCPU];
+
+// Hart 0 sets this after data/bss init; secondary harts spin until it
+// matches.  "la64done" as a little-endian 8-byte constant.
+#define BOOT_DONE_MAGIC 0x6c613634646f6e65ULL
 static volatile uint64 boot_done;
 
 // Linker symbols: _data_lma = flash address of .data initial values
@@ -29,19 +33,7 @@ start()
   int id = r_cpuid();
   w_tp(id);
 
-  // Output early debug message via UART
-  // Note: This happens before UART init in main(), use direct MMIO write
-  volatile char *uart_lsr = (volatile char*)0x1FE001E5;  // LSR register
-  volatile char *uart_thr = (volatile char*)0x1FE001E0;  // THR register
-
   if(id == 0){
-    const char *msg = "start: begin\n";
-    while (*msg) {
-      // Wait for THR to be empty
-      while ((*uart_lsr & (1 << 5)) == 0) ;
-      *uart_thr = *msg++;
-    }
-
     // Copy .data from flash LMA to RAM VMA.
     uint64 *src = (uint64*)_data_lma;
     uint64 *dst = (uint64*)_data_start;
@@ -52,15 +44,9 @@ start()
     while(dst < (uint64*)_bss_end) *dst++ = 0;
 
     __sync_synchronize();
-    boot_done = 0x6c613634646f6e65ULL;
-
-    msg = "start: calling main\n";
-    while (*msg) {
-      while ((*uart_lsr & (1 << 5)) == 0) ;
-      *uart_thr = *msg++;
-    }
+    boot_done = BOOT_DONE_MAGIC;
   } else {
-    while(boot_done != 0x6c613634646f6e65ULL)
+    while(boot_done != BOOT_DONE_MAGIC)
       ;
     __sync_synchronize();
   }

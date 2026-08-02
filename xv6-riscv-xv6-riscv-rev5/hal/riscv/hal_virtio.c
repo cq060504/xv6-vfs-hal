@@ -86,7 +86,7 @@ disk_for_dev(uint dev)
 }
 
 static void
-virtio_disk_init_one(int d)
+hal_disk_init_one(int d)
 {
   uint32 status = 0;
   struct virtio_disk *vdisk = &disk[d];
@@ -181,10 +181,10 @@ virtio_disk_init_one(int d)
 }
 
 void
-virtio_disk_init(void)
+hal_disk_init(void)
 {
   for(int d = 0; d < NVIRTIO; d++)
-    virtio_disk_init_one(d);
+    hal_disk_init_one(d);
 }
 
 // find a free descriptor, mark it non-free, return its index.
@@ -248,7 +248,7 @@ alloc3_desc(struct virtio_disk *vdisk, int *idx)
 }
 
 void
-virtio_disk_rw(struct buf *b, int write)
+hal_disk_rw(struct buf *b, int write)
 {
   struct virtio_disk *vdisk = disk_for_dev(b->dev);
   int d = b->dev - 1;
@@ -301,7 +301,7 @@ virtio_disk_rw(struct buf *b, int write)
   vdisk->desc[idx[2]].flags = VRING_DESC_F_WRITE; // device writes the status
   vdisk->desc[idx[2]].next = 0;
 
-  // record struct buf for virtio_disk_intr().
+  // record struct buf for hal_disk_intr().
   b->disk = 1;
   vdisk->info[idx[0]].b = b;
 
@@ -317,7 +317,7 @@ virtio_disk_rw(struct buf *b, int write)
 
   *R(d, VIRTIO_MMIO_QUEUE_NOTIFY) = 0; // value is queue number
 
-  // Wait for virtio_disk_intr() to say request has finished.
+  // Wait for hal_disk_intr() to say request has finished.
   while(b->disk == 1) {
     sleep(b, &vdisk->vdisk_lock);
   }
@@ -329,7 +329,7 @@ virtio_disk_rw(struct buf *b, int write)
 }
 
 static void
-virtio_disk_intr_one(int d)
+hal_disk_intr_one(int d)
 {
   struct virtio_disk *vdisk = &disk[d];
 
@@ -353,7 +353,7 @@ virtio_disk_intr_one(int d)
     int id = vdisk->used->ring[vdisk->used_idx % NUM].id;
 
     if(vdisk->info[id].status != 0)
-      panic("virtio_disk_intr status");
+      panic("hal_disk_intr status");
 
     struct buf *b = vdisk->info[id].b;
     b->disk = 0;   // disk is done with buf
@@ -366,10 +366,10 @@ virtio_disk_intr_one(int d)
 }
 
 void
-virtio_disk_intr()
+hal_disk_intr()
 {
   for(int d = 0; d < NVIRTIO; d++){
     if(*R(d, VIRTIO_MMIO_INTERRUPT_STATUS) & 0x3)
-      virtio_disk_intr_one(d);
+      hal_disk_intr_one(d);
   }
 }

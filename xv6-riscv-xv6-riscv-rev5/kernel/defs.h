@@ -163,10 +163,10 @@ int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
 uint64          vmfault(pagetable_t, uint64, int);
 
-// virtio_disk.c
-void            virtio_disk_init(void);
-void            virtio_disk_rw(struct buf *, int);
-void            virtio_disk_intr(void);
+// hal disk (virtio on RISC-V, ramdisk on LoongArch)
+void            hal_disk_init(void);
+void            hal_disk_rw(struct buf *, int);
+void            hal_disk_intr(void);
 
 // vfs.c
 void            vfs_init(void);

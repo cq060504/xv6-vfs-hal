@@ -62,21 +62,6 @@ w_sstatus(uint64 x)
   asm volatile("csrw sstatus, %0" : : "r" (x));
 }
 
-// Supervisor Interrupt Pending
-static inline uint64
-r_sip()
-{
-  uint64 x;
-  asm volatile("csrr %0, sip" : "=r" (x) );
-  return x;
-}
-
-static inline void
-w_sip(uint64 x)
-{
-  asm volatile("csrw sip, %0" : : "r" (x));
-}
-
 // Supervisor Interrupt Enable
 #define SIE_SEIE (1L << 9) // external
 #define SIE_STIE (1L << 5) // timer
@@ -321,14 +306,6 @@ w_tp(uint64 x)
   asm volatile("mv tp, %0" : : "r" (x));
 }
 
-static inline uint64
-r_ra()
-{
-  uint64 x;
-  asm volatile("mv %0, ra" : "=r" (x) );
-  return x;
-}
-
 // flush the TLB.
 static inline void
 sfence_vma()
@@ -347,12 +324,9 @@ static inline uint64 hal_read_sepc(void)      { return r_sepc(); }
 static inline void   hal_write_sepc(uint64 x) { w_sepc(x); }
 static inline uint64 hal_read_scause(void)    { return r_scause(); }
 static inline uint64 hal_read_stval(void)     { return r_stval(); }
-static inline uint64 hal_read_stvec(void)     { return r_stvec(); }
 static inline void   hal_write_stvec(uint64 x) { w_stvec(x); }
 static inline uint64 hal_read_satp(void)      { return r_satp(); }
 static inline void   hal_write_satp(uint64 x) { w_satp(x); }
-static inline uint64 hal_read_sp(void)        { return r_sp(); }
-static inline uint64 hal_read_ra(void)        { return r_ra(); }
 static inline uint64 hal_get_time(void)       { return r_time(); }
 static inline void   hal_set_timer(uint64 next) { w_stimecmp(next); }
 static inline void   hal_tlb_flush_all(void)  { sfence_vma(); }

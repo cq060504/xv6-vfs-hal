@@ -7,16 +7,8 @@
 #include "types.h"
 
 // Platform-specific definitions (CSR inlines, PTE format, memory layout).
-// Each architecture provides its own arch.h and memlayout.h.
-#ifdef ARCH_riscv
 #include "arch.h"
 #include "memlayout.h"
-#elif defined(ARCH_loongarch)
-#include "arch.h"
-#include "memlayout.h"
-#else
-#error "ARCH_xxx not defined"
-#endif
 
 // Subsystem HAL interface declarations.
 #include "hal_arch.h"

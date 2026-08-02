@@ -218,7 +218,7 @@ devintr()
               || irq == VIRTIO2_IRQ
 #endif
     ){
-      virtio_disk_intr();
+      hal_disk_intr();
     } else if(irq){
       printf("unexpected interrupt irq=%d\n", irq);
     }

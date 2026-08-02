@@ -4,38 +4,25 @@
 
 #define USER_LOW_GUARD_PAGES 2
 
-extern char _data_lma[];
-extern char _trampoline[];
-extern char _data_start[];
-extern char _bss_end[];
-extern char end[];
+// NPROC=64 → 64*3=192 pages.  KSTACK_REGION_BOTTOM must be exactly
+// KSTACK_TOP - (NPROC * 3) * PGSIZE.  If NPROC changes without updating
+// memlayout.h, the stack region will be wrong and the refill handler
+// will reject valid kernel stack VAs or accept invalid ones.
+_Static_assert(KSTACK_TOP - KSTACK_REGION_BOTTOM == 192 * 4096,
+               "KSTACK_REGION_BOTTOM not aligned with NPROC — check memlayout.h");
+
 extern void tlb_refill_entry(void);
 
+// DMW0 (PLV0, VSEG=0) identity-maps all low physical addresses for kernel
+// mode, so the kernel never walks PGDL/PGDH for low-address accesses.
+// High-address kernel stacks are mapped separately via PGDH and
+// proc_mapstacks().  Therefore hal_vm_map_kernel() is intentionally a
+// no-op — building dead page-table entries would waste memory (~40 pages)
+// and imply a page-table dependency that does not exist.
 void
 hal_vm_map_kernel(pagetable_t kpgtbl)
 {
-  kvmmap(kpgtbl, PGROUNDDOWN(UART0), PGROUNDDOWN(UART0),
-         PGSIZE, PTE_R | PTE_W);
-  kvmmap(kpgtbl, EIOINTC, EIOINTC, 0x4000000, PTE_R | PTE_W);
-
-  uint64 rodata_end = (uint64)_data_lma;
-  uint64 tramp_va = (uint64)_trampoline;
-  if(tramp_va > KERNBASE)
-    kvmmap(kpgtbl, KERNBASE, KERNBASE,
-           tramp_va - KERNBASE, PTE_R | PTE_X);
-  uint64 after_tramp = tramp_va + PGSIZE;
-  if(rodata_end > after_tramp)
-    kvmmap(kpgtbl, after_tramp, after_tramp,
-           rodata_end - after_tramp, PTE_R | PTE_X);
-
-  uint64 ram_begin = PGROUNDDOWN((uint64)_data_start);
-  uint64 ram_end = PGROUNDUP((uint64)_bss_end);
-  uint64 free_begin = PGROUNDUP((uint64)end);
-  kvmmap(kpgtbl, ram_begin, ram_begin,
-         ram_end - ram_begin, PTE_R | PTE_W);
-  if(free_begin < PHYSTOP)
-    kvmmap(kpgtbl, free_begin, free_begin,
-           PHYSTOP - free_begin, PTE_R | PTE_W);
+  (void)kpgtbl;
 }
 
 void

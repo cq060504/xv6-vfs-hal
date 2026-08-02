@@ -57,7 +57,7 @@ ARCH_OBJS = \
   $(HAL)/$(ARCH)/hal_intr.o \
   $(HAL)/$(ARCH)/hal_uart.o \
   $(HAL)/$(ARCH)/hal_vm.o \
-  $(HAL)/$(ARCH)/hal_virtio.o \
+  $(HAL)/$(ARCH)/hal_ramdisk.o \
   $(HAL)/$(ARCH)/hal_tlbrefill.o
 endif
 

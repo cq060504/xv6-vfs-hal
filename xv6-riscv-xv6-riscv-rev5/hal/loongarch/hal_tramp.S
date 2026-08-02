@@ -8,12 +8,12 @@
 # so the kernel accesses physical addresses directly.  The trampoline is
 # placed at its flash LMA (0x1C008000) so DMW0 reaches the real code.
 #
-# Trapframe access: KSave1 (CSR 0x31) holds the *kernel* virtual address
+# Trapframe access: KSave1 holds the *kernel* virtual address
 # of the current process's trapframe (p->trapframe).  This KVA is in the
 # DMW0 identity-mapped window, so uservec/userret can read/write the
 # trapframe without going through the user page table or the TRAPFRAME VA.
 #
-# KSave0 (CSR 0x30) is used to save/restore user a0 across the transition.
+# KSave0 is used to save/restore user a0 across the transition.
 
 #include "arch.h"
 #include "memlayout.h"
@@ -27,8 +27,8 @@ trampoline:
 .globl uservec
 uservec:
         # Swap user a0 with KSave0; then load trapframe KVA from KSave1.
-        csrwr   $a0, 0x30              # KSave0=user_a0 (a0 gets old KSave0, ignored)
-        csrrd   $a0, 0x31              # a0 = KSave1 = p->trapframe (KVA, DMW0-accessible)
+        csrwr   $a0, CSR_KSAVE0        # KSave0=user_a0 (a0 gets old KSave0, ignored)
+        csrrd   $a0, CSR_KSAVE1        # a0 = KSave1 = p->trapframe (KVA, DMW0-accessible)
 
         # Save all user registers to trapframe via KVA (DMW0 identity-mapped).
         # Offsets match struct trapframe in proc.h.
@@ -64,11 +64,11 @@ uservec:
         st.d    $t6, $a0, 280
 
         # Recover user a0 from KSave0 and store to trapframe->a0.
-        csrrd   $t0, 0x30
+        csrrd   $t0, CSR_KSAVE0
         st.d    $t0, $a0, 112
 
         # Save user pc (ERA) to trapframe->epc.
-        csrrd   $t0, 0x6               # ERA
+        csrrd   $t0, CSR_ERA            # ERA
         st.d    $t0, $a0, 24
 
         # Load kernel stack pointer from trapframe.
@@ -84,7 +84,7 @@ uservec:
         ld.d    $t1, $a0, 0
 
         # Switch to kernel page table (no invtlb — kernel uses DMW, not TLB).
-        csrwr   $t1, 0x19              # PGDL = kernel page table
+        csrwr   $t1, CSR_PGDL           # PGDL = kernel page table
 
         # Call usertrap().  Use $ra so usertrap() can return to userret.
         jirl    $ra, $t0, 0
@@ -94,11 +94,11 @@ userret:
         # usertrap() returns here with the user page table in a0.
 
         # Switch to user page table.
-        csrwr   $a0, 0x19              # PGDL = user page table
+        csrwr   $a0, CSR_PGDL           # PGDL = user page table
         invtlb  0, $r0, $r0
 
         # Load trapframe KVA from KSave1 (DMW0-accessible, per-process).
-        csrrd   $a0, 0x31              # a0 = p->trapframe KVA
+        csrrd   $a0, CSR_KSAVE1         # a0 = p->trapframe KVA
 
         # Restore all user registers from trapframe.
         # a0 is the base pointer, restored LAST.

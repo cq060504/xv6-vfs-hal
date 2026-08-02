@@ -28,16 +28,10 @@
 #define UART0_IRQ 0
 
 // virtio on LoongArch is PCI-based, not MMIO.
-// VIRTIO0 provides the base for compatibility; actual access goes through PCI.
-#define VIRTIO0 0x10000000L
 #define VIRTIO0_IRQ 32
 
 // Extended I/O Interrupt Controller base address.
 #define EIOINTC 0x0FE00000L
-// PLIC alias for vm.c compatibility (maps PLIC region = EIOINTC region).
-#define PLIC EIOINTC
-#define PLIC_PRIORITY (PLIC + 0x0)
-#define PLIC_PENDING (PLIC + 0x1000)
 
 // Kernel code in flash at VMA 0x1c000000. Kernel data in RAM at 0x00400000.
 // PHYSTOP = start of kernel data in RAM + 124MB usable RAM.

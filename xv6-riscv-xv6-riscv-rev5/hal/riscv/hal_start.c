@@ -68,8 +68,11 @@ timerinit()
 }
 
 // ---- HAL unified interface wrapper ----
-// timerinit() touches M-mode CSRs and is called from start() before mret.
-// main() runs in S-mode, so the HAL wrapper may only program stimecmp.
+// timerinit() (called from start() in M-mode) configures M-mode CSR
+// delegation so S-mode can access stimecmp/time.  hal_timer_init()
+// (called from main() in S-mode) only programs the next one-shot
+// deadline.  The two must remain separate because M-mode CSR writes
+// (menvcfg/mcounteren) are illegal in S-mode.
 void
 hal_timer_init(void)
 {
