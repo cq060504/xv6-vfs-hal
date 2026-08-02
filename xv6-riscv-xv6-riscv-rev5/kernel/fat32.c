@@ -872,9 +872,21 @@ static int funlink(struct vnode *dir, char *nm){
   
   if(de.DIR_Attr&ATTR_DIRECTORY){
     uint c=((uint)de.DIR_FstClusHI<<16)|de.DIR_FstClusLO;
-    for(uint b=64;b<fm->bps;b+=32){
-      uchar f; if(sread(fm,clus_to_sec(fm,c),b,&f,1)<0) return -1;
-      if(f!=0x00&&f!=0xE5) return -1;
+    // Walk the ENTIRE directory cluster chain and every sector of each
+    // cluster.  The old code only scanned the first sector of the first
+    // cluster (512 bytes = 14 entries past "." and ".."), so a non-empty
+    // directory whose entries spill into later sectors/clusters was
+    // wrongly judged empty and silently deleted (B6 fix).
+    uint start_off = 64;  // first sector of first cluster: skip "." (0) ".." (32)
+    while(c>=2&&c<FAT32_EOC_MIN){
+      for(uint s=0;s<fm->sec_per_clus;s++){
+        for(uint b=start_off;b<fm->bps;b+=32){
+          uchar f; if(sread(fm,clus_to_sec(fm,c)+s,b,&f,1)<0) return -1;
+          if(f!=0x00&&f!=0xE5) return -1;
+        }
+      }
+      start_off = 0;
+      c=read_fat(fm,c);
     }
   }
   
