@@ -28,6 +28,8 @@ struct fat32_mount {
 struct fat32_vnode {
   struct fat32_mount *fm; uint first_clus; uint file_size;
   uchar attrs; int dirty;
+  uint pdir_clus;  // first cluster of parent directory (0 for root)
+  uint dent_off;   // byte offset of this file's dir entry within parent
 };
 
 // ---- sector -> block mapping helpers ----
@@ -90,6 +92,19 @@ static void name83(char *s, uchar o[11]){
   if(d) for(i=0;i<3&&d[i];i++) o[8+i]=(d[i]>='a'&&d[i]<='z')?d[i]-32:d[i];
 }
 static int ncmp(char *s, uchar n[11]){ uchar b[11]; name83(s,b); return memcmp(b,n,11); }
+
+// ASCII case-insensitive string compare (bounded by maxlen).
+// STOPS at the first NUL on either side; compares case-insensitively.
+static int ncasecmp(char *a, char *b, int maxlen){
+  for(int i = 0; i < maxlen; i++){
+    char ca = a[i], cb = b[i];
+    if(ca >= 'A' && ca <= 'Z') ca += 32;
+    if(cb >= 'A' && cb <= 'Z') cb += 32;
+    if(ca != cb) return (uchar)ca - (uchar)cb;
+    if(ca == 0) return 0;
+  }
+  return 0;
+}
 
 // ---- LFN helpers ----
 // Compute the LFN checksum from an 11-byte short name.
@@ -227,6 +242,7 @@ static int dlookup(struct vnode *dir, char *nm, struct fat32_dirent *de, uint *o
   int lfn_chars = 0;
   uchar lfn_cksum = 0;
   int lfn_active = 0;
+  int lfn_next = 0;   // expected seq of the next LFN entry (decrements to 1)
   
   while(c>=2&&c<FAT32_EOC_MIN){
     for(uint s=0;s<fm->sec_per_clus;s++){
@@ -256,20 +272,33 @@ static int dlookup(struct vnode *dir, char *nm, struct fat32_dirent *de, uint *o
           int is_last = (lfn->seq & LFN_LAST) != 0;
           
           if(is_last){
-            // Start of a new LFN chain
-            lfn_chars = 0;
+            // Start of a new LFN chain. On disk the entries are written in
+            // reverse order: [N|LAST],[N-1],...,[1],<short entry>. The first
+            // one we see is seq==N; we then expect N-1, N-2, ... down to 1.
             lfn_active = 1;
             lfn_cksum = lfn->checksum;
+            lfn_next = seq - 1;      // expect the next entry to be seq-1
+            lfn_chars = seq * LFN_CHARS_PER_ENTRY;
+            int base = (seq - 1) * LFN_CHARS_PER_ENTRY;
+            for(int i = 0; i < 5 && base + i < 260; i++)
+              lfn_buf[base + i] = lfn->name1[i];
+            for(int i = 0; i < 6 && base + 5 + i < 260; i++)
+              lfn_buf[base + 5 + i] = lfn->name2[i];
+            for(int i = 0; i < 2 && base + 11 + i < 260; i++)
+              lfn_buf[base + 11 + i] = lfn->name3[i];
+            continue;
           }
           
-          if(lfn_active && lfn->checksum == lfn_cksum && seq == lfn_chars / LFN_CHARS_PER_ENTRY + 1){
-            // Accumulate unicode chars from this LFN entry
-            for(int i = 0; i < 5; i++)
-              if(lfn_chars < 260){ lfn_buf[lfn_chars++] = lfn->name1[i]; }
-            for(int i = 0; i < 6; i++)
-              if(lfn_chars < 260){ lfn_buf[lfn_chars++] = lfn->name2[i]; }
-            for(int i = 0; i < 2; i++)
-              if(lfn_chars < 260){ lfn_buf[lfn_chars++] = lfn->name3[i]; }
+          if(lfn_active && lfn->checksum == lfn_cksum && seq == lfn_next){
+            // Accumulate unicode chars from this LFN entry at its proper slot.
+            int base = (seq - 1) * LFN_CHARS_PER_ENTRY;
+            for(int i = 0; i < 5 && base + i < 260; i++)
+              lfn_buf[base + i] = lfn->name1[i];
+            for(int i = 0; i < 6 && base + 5 + i < 260; i++)
+              lfn_buf[base + 5 + i] = lfn->name2[i];
+            for(int i = 0; i < 2 && base + 11 + i < 260; i++)
+              lfn_buf[base + 11 + i] = lfn->name3[i];
+            lfn_next--;
           } else {
             // Checksum mismatch or sequence error - reset
             lfn_active = 0;
@@ -284,20 +313,20 @@ static int dlookup(struct vnode *dir, char *nm, struct fat32_dirent *de, uint *o
           // Verify checksum
           uchar calc_cksum = lfn_checksum(d.DIR_Name);
           if(calc_cksum == lfn_cksum){
-            // Build ASCII string from LFN unicode buffer
+            // Build ASCII string from LFN unicode buffer.
+            // Stop at the NUL (0x0000) or the 0xFFFF padding marker.
             char lfn_str[260];
             int lfn_len = 0;
-            for(int i = 0; i < lfn_chars; i++){
-              // For our purposes, only take low byte (ASCII range)
-              // Full UTF-16 would be more complex but xv6 names are ASCII
-              if(lfn_buf[i] != 0 && lfn_buf[i] < 128){
+            for(int i = 0; i < lfn_chars && lfn_len < 255; i++){
+              if(lfn_buf[i] == 0 || lfn_buf[i] == 0xFFFF) break;
+              if(lfn_buf[i] < 128){
                 lfn_str[lfn_len++] = (char)lfn_buf[i];
               }
             }
             lfn_str[lfn_len] = 0;
             
-            // Compare with requested name
-            if(strncmp(nm, lfn_str, 14) == 0 && nm[strlen(lfn_str)] == 0){
+            // Compare with requested name (case-insensitive, FAT semantics)
+            if(ncasecmp(nm, lfn_str, 256) == 0){
               memmove(de, &d, 32);
               if(off) *off = pos;  // return offset of the short entry (not first LFN)
               if(lfn_name) memmove(lfn_name, lfn_str, lfn_len + 1);
@@ -306,7 +335,17 @@ static int dlookup(struct vnode *dir, char *nm, struct fat32_dirent *de, uint *o
           }
         }
         
-        // Also try matching against the short 8.3 name
+        // Also try matching against the short 8.3 name.
+        // Special-case "." and "..": their on-disk entries are laid out as
+        // "." or ".." followed by spaces, which name83()'s generic 8.3
+        // conversion ("        .  ") cannot match (B4 fix).
+        if((nm[0]=='.' && nm[1]==0 && d.DIR_Name[0]=='.' && d.DIR_Name[1]==' ') ||
+           (nm[0]=='.' && nm[1]=='.' && nm[2]==0 && d.DIR_Name[0]=='.' && d.DIR_Name[1]=='.')){
+          memmove(de, &d, 32);
+          if(off) *off = pos;
+          if(lfn_name) lfn_name[0] = 0;  // no LFN name
+          return 0;
+        }
         if(ncmp(nm, d.DIR_Name) == 0){
           memmove(de, &d, 32);
           if(off) *off = pos;
@@ -414,6 +453,31 @@ static int dwrite(struct vnode *dir, uint off, struct fat32_dirent *de){
   return dwrite_raw(dir, off, de, 32);
 }
 
+// ---- Write back file size / first cluster to the on-disk directory entry ----
+// The VFS keeps file size and first cluster in memory for O_APPEND & caching;
+// this persists them so a later open() sees the same file. For the root
+// directory (pdir_clus == 0) there is no owning entry and nothing to do.
+static int sync_dirent(struct vnode *vp){
+  struct fat32_vnode *fv = vp->priv;
+  if(fv == 0 || fv->pdir_clus == 0) return 0;
+  struct fat32_mount *fm = fv->fm;
+  uint epc = (fm->sec_per_clus * fm->bps) / 32;
+  uint cluster = fv->pdir_clus;
+  for(uint i = 0; i < fv->dent_off / (epc * 32); i++){
+    uint nx = read_fat(fm, cluster);
+    if(nx >= FAT32_EOC_MIN) return -1;
+    cluster = nx;
+  }
+  uint bo = fv->dent_off % (fm->sec_per_clus * fm->bps);
+  uint sec = clus_to_sec(fm, cluster) + bo / fm->bps;
+  struct fat32_dirent de;
+  if(sread(fm, sec, bo % fm->bps, &de, sizeof(de)) < 0) return -1;
+  de.DIR_FileSize = fv->file_size;
+  de.DIR_FstClusHI = (fv->first_clus >> 16) & 0xFFFF;
+  de.DIR_FstClusLO = fv->first_clus & 0xFFFF;
+  return swrite(fm, sec, bo % fm->bps, &de, sizeof(de));
+}
+
 // ---- Write LFN entries + short entry for a new file ----
 // Writes lfn_cnt LFN entries followed by the short entry at offset `*off`.
 // Fills in seq, checksum, name1/name2/name3 from `name`.
@@ -505,6 +569,8 @@ static struct vnode* fvalloc(struct fat32_mount *fm, uint c, uint sz, uchar at){
   struct vnode *vp=alloc_vnode(); if(!vp) return 0;
   struct fat32_vnode *fv=kalloc(); if(!fv){vput(vp);return 0;}
   fv->fm=fm;fv->first_clus=c;fv->file_size=sz;fv->attrs=at;fv->dirty=0;
+  fv->pdir_clus=0;   // set by flookup/fcreate when the parent dir entry is known
+  fv->dent_off=0;
   vp->type=(at&ATTR_DIRECTORY)?V_DIR:V_FILE;
   vp->mp=fm->vfs_mount;
   vp->dev=fm->dev;vp->ops=&fat32_vnops;vp->priv=fv;vp->inum=c;vp->size=sz;
@@ -515,7 +581,9 @@ static void fdestroy(void *arg){if(arg)kfree(arg);}
 static int flookup(struct vnode *dir, char *nm, struct vnode **res){
   struct fat32_vnode *dv = (struct fat32_vnode*)dir->priv;
   
-  // FAT32 root directory has no "." or ".." on-disk entries
+  // FAT32 root directory has no "." or ".." on-disk entries;
+  // for non-root directories ".." is an on-disk entry that carries the
+  // parent's first cluster in its FstClus fields.
   if(strncmp(nm, ".", 14) == 0){
     *res = vget(dir);
     return 0;
@@ -526,9 +594,17 @@ static int flookup(struct vnode *dir, char *nm, struct vnode **res){
   }
   
   struct fat32_dirent de; char lfn[260]; lfn[0] = 0;
-  if(dlookup(dir, nm, &de, 0, lfn)) return -1;
+  uint off;
+  if(dlookup(dir, nm, &de, &off, lfn)) return -1;
   uint c=((uint)de.DIR_FstClusHI<<16)|de.DIR_FstClusLO;
   *res=fvalloc(dv->fm, c, de.DIR_FileSize, de.DIR_Attr);
+  if(*res){
+    // Remember where this directory entry lives so later file-size /
+    // first-cluster updates can be written back to disk (B1 fix).
+    struct fat32_vnode *nfv = (*res)->priv;
+    nfv->pdir_clus = dv->first_clus;
+    nfv->dent_off = off;
+  }
   return *res?0:-1;
 }
 static int fread(struct vnode *vp, uint64 buf, int n, uint off){
@@ -570,6 +646,11 @@ static int fwrite(struct vnode *vp, uint64 buf, int n, uint off){
     if(in>=bpc){in=0;uint nx=read_fat(fm,c);if(nx>=FAT32_EOC_MIN&&total<n){nx=alloc_clus(fm);if(!nx)break;write_fat(fm,c,nx);write_fat(fm,nx,FAT32_EOC);c=nx;}else c=nx;}
   }
   if(off+total>fv->file_size){fv->file_size=off+total;vp->size=fv->file_size;}
+  // Persist size and first cluster so a later open() on this path sees the
+  // same file (B1 fix).  Directory entries (attr 0x10) never hold a size and
+  // must not be touched here.
+  if(!(fv->attrs & ATTR_DIRECTORY))
+    sync_dirent(vp);
   return total;
 }
 static int fstat(struct vnode *vp, uint64 addr){
@@ -667,7 +748,13 @@ static int freaddir(struct vnode *vp, uint64 buf, uint off){
         }
         
         if(lfn_count > 0 && total_lfn_chars > 0){
-          // Build ASCII name from LFN buffer
+          // Build ASCII name from LFN buffer.
+          // ABI: struct dirent.name can hold at most 13 chars + NUL.
+          // If the LFN fits, emit it verbatim (it round-trips through
+          // dlookup, which matches LFNs case-insensitively).
+          // If it is longer than 13 chars, fall back to the 8.3 DOS name
+          // in the directory entry: that name is unique and dlookup's
+          // short-name match finds it exactly, so `ls` output stays usable.
           int nl = 0;
           for(int i = 0; i < total_lfn_chars && nl < 13; i++){
             if(lfn_buf[i] == 0) break;  // NUL terminator
@@ -675,7 +762,29 @@ static int freaddir(struct vnode *vp, uint64 buf, uint off){
             if(lfn_buf[i] < 128)
               vde.name[nl++] = (char)lfn_buf[i];
           }
-          vde.name[nl] = 0;
+          // Check whether a non-padding char was cut off by the 13-char limit;
+          // if so the truncated name would not match dlookup (lookup uses the
+          // full LFN), so present the DOS short name instead.
+          int cut_off = 0;
+          for(int i = nl; i < total_lfn_chars; i++){
+            if(lfn_buf[i] != 0 && lfn_buf[i] != 0xFFFF && lfn_buf[i] < 128){
+              cut_off = 1;
+              break;
+            }
+          }
+          if(cut_off){
+            nl = 0;
+            for(int i = 0; i < 8 && d.DIR_Name[i] != ' '; i++)
+              vde.name[nl++] = (d.DIR_Name[i] >= 'A' && d.DIR_Name[i] <= 'Z') ? d.DIR_Name[i] + 32 : d.DIR_Name[i];
+            if(d.DIR_Name[8] != ' '){
+              vde.name[nl++] = '.';
+              for(int i = 8; i < 11 && d.DIR_Name[i] != ' '; i++)
+                vde.name[nl++] = (d.DIR_Name[i] >= 'A' && d.DIR_Name[i] <= 'Z') ? d.DIR_Name[i] + 32 : d.DIR_Name[i];
+            }
+            vde.name[nl] = 0;
+          } else {
+            vde.name[nl] = 0;
+          }
         } else {
           // Use short 8.3 name
           int nl = 0;
@@ -739,7 +848,19 @@ static int fcreate(struct vnode *dir, char *nm, short type, struct vnode **new){
     dotdot->DIR_FstClusHI=(dv->first_clus>>16)&0xFFFF;dotdot->DIR_FstClusLO=dv->first_clus&0xFFFF;
     swrite(fm,sec,0,z,512);write_fat(fm,c,FAT32_EOC);
   }
-  if(new){*new=fvalloc(fm,c,0,de.DIR_Attr);if(!*new)return -1;}
+  if(new){
+    *new=fvalloc(fm,c,0,de.DIR_Attr);
+    if(!*new) return -1;
+    // Remember the on-disk directory entry location so size/first-cluster
+    // changes made through this vnode can be written back (B1 fix).
+    // NOTE: dfree() returns the offset of the FIRST free slot, which holds
+    // the first LFN entry when lfn_cnt>0; the short entry (which stores the
+    // file size / first cluster) lives lfn_cnt*32 bytes later.
+    // Flookup's dlookup() already returns the short-entry offset directly.
+    struct fat32_vnode *nfv = (*new)->priv;
+    nfv->pdir_clus = dv->first_clus;
+    nfv->dent_off = off + lfn_cnt * 32;
+  }
   return 0;
 }
 
@@ -788,7 +909,10 @@ static int fmkdir(struct vnode *dir, char *nm){
 static int ftrunc(struct vnode *vp){
   struct fat32_vnode *fv=vp->priv;
   if(fv->first_clus){free_chain(fv->fm,fv->first_clus);fv->first_clus=0;}
-  fv->file_size=0;vp->size=0;return 0;
+  fv->file_size=0;vp->size=0;
+  if(!(fv->attrs & ATTR_DIRECTORY))
+    sync_dirent(vp);
+  return 0;
 }
 
 static struct vnode* froot(struct mount *mp){return vget(mp->root);}
