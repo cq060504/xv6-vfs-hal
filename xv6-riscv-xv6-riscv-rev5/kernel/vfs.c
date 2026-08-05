@@ -7,6 +7,7 @@
 #include "file.h"
 #include "proc.h"
 #include "fcntl.h"
+#include "fs.h"
 #include "vfs.h"
 
 struct mount *mounttable[NMOUNT];
@@ -88,9 +89,11 @@ vfs_mount(char *path, uint dev, char *fstype)
   struct mount *mp = 0;
   struct vnode *mpoint = 0;
 
-  // Reject duplicate mount at the same path
+  // Reject duplicate mount at the same path, or mounting the same device twice
   for(i = 0; i < nmount; i++){
     if(strncmp(mounttable[i]->path, path, 128) == 0)
+      return 0;
+    if(mounttable[i]->dev == dev)
       return 0;
   }
 
@@ -284,7 +287,7 @@ skipelem(char *path, char *name)
   s = path;
   while(*path != '/' && *path != 0) path++;
   len = path - s;
-  if(len >= 14) len = 14;
+  if(len >= VDIRSIZ - 1) len = VDIRSIZ - 1;
   memmove(name, s, len);
   name[len] = 0;
   while(*path == '/') path++;
@@ -309,7 +312,7 @@ cross_mount(struct vnode *vp)
 struct vnode*
 vfs_namei(char *path)
 {
-  char name[15];
+  char name[VDIRSIZ];
   struct vnode *vp, *next;
   char *rest;
 
@@ -359,7 +362,7 @@ vfs_namei(char *path)
 struct vnode*
 vfs_nameiparent(char *path, char *name)
 {
-  char buf[15];
+  char buf[VDIRSIZ];
   struct vnode *vp, *next;
   char *rest;
 
@@ -368,7 +371,7 @@ vfs_nameiparent(char *path, char *name)
 
   while((rest = skipelem(rest, buf)) != 0){
     if(*rest == '\0'){
-      safestrcpy(name, buf, 15);
+      safestrcpy(name, buf, VDIRSIZ);
       if(vp->type != V_DIR){
         vput(vp);
         return 0;
@@ -420,7 +423,7 @@ vfs_open(char *path, int mode, struct vnode **vp)
   struct vnode *ip;
   if((ip = vfs_namei(path)) == 0){
     if(mode & O_CREATE){
-      char name[15];
+      char name[VDIRSIZ];
       struct vnode *dir = vfs_nameiparent(path, name);
       if(dir == 0) return -1;
       vn_lock(dir);

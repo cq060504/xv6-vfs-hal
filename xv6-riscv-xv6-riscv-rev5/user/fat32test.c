@@ -9,7 +9,8 @@
 //   "." / ".." path lookup (B4)
 //   root readdir listing
 //   LFN (<= 13 chars) create/read round-trip + readdir verbatim display
-//   LFN (> 13 chars) short-name fallback display + reopen via short name
+//   LFN (> 13 chars): readdir shows the FULL long name (VDIRSIZ=256) and it
+//   can be reopened by that full name
 //   unlink (plain, LFN, non-empty-directory rejection, empty directory)
 
 #include "kernel/types.h"
@@ -33,7 +34,7 @@ check(int ok, char *msg)
 
 // ---- directory listing helper --------------------------------------
 struct dlist {
-  char name[16];
+  char name[VDIRSIZ];
   ushort inum;
 };
 
@@ -44,12 +45,11 @@ readdirall(char *path, struct dlist *out, int max)
 {
   int fd = open(path, O_RDONLY);
   if(fd < 0) return -1;
-  struct dirent de;
+  struct vdirent de;
   int cnt = 0;
   while(cnt < max && read(fd, &de, sizeof(de)) == sizeof(de)){
     if(de.inum == 0) continue;
-    memmove(out[cnt].name, de.name, 14);
-    out[cnt].name[14] = 0;
+    strcpy(out[cnt].name, de.name);
     out[cnt].inum = de.inum;
     cnt++;
   }
@@ -127,19 +127,23 @@ rwcheck(char *path, int n)
   free(buf); free(rb);
 }
 
-static char *newpath(char *p, char *name, char *out)
-{
-  memmove(out, p, strlen(p) + 1);
-  memmove(out + strlen(p), name, strlen(name) + 1);
-  return out;
-}
-
 int
 main(void)
 {
   struct stat st;
-  struct dlist oldl[48], newl[48];
-  int fd, i, j;
+  int fd;
+
+  // oldl/newl hold up to 48 directory entries; each entry is 258 bytes
+  // (VDIRSIZ=256 + inum), so 48 entries = ~12KB.  xv6's initial user
+  // stack is only one 4KB page, so these MUST live on the heap, not
+  // on the stack (a stack allocation overflows into the guard page and
+  // traps with scause 0xf / "unexpected scause 0xf").
+  struct dlist *oldl = malloc(sizeof(struct dlist) * 48);
+  struct dlist *newl = malloc(sizeof(struct dlist) * 48);
+  if(oldl == 0 || newl == 0){
+    printf("fat32test: out of memory\n");
+    exit(1);
+  }
 
   printf("fat32test: starting\n");
 
@@ -245,41 +249,28 @@ main(void)
   check(hasname(oldl, rcnt, "FileDataX.txt") >= 0,
         "readdir shows LFN <=13 verbatim (case preserved)");
 
-  // ---- 11. LFN > 13 chars: short-name fallback + reopen via short name ----
-  int oc = readdirall("/fat", oldl, 48);  // snapshot before
+  // ---- 11. LFN > 13 chars: full name visible + reopen by that name ----
+  // With VDIRSIZ=256 the long name is now reported in full, so we verify
+  // the directory listing shows "LongFileNameTest.txt" (not a truncated
+  // short-name fallback) and that it can be reopened by its full name.
   char *ldata = "long-data-content-123456";
   fd = open("/fat/LongFileNameTest.txt", O_WRONLY | O_CREATE | O_TRUNC);
   check(fd >= 0, "create LFN >13");
   if(fd >= 0){ write(fd, ldata, 23); close(fd); }
 
   int nc = readdirall("/fat", newl, 48);
-  char shortnm[16];
-  int snfound = 0;
-  for(i = 0; i < nc && !snfound; i++){
-    int inold = 0;
-    for(j = 0; j < oc; j++)
-      if(strcmp(newl[i].name, oldl[j].name) == 0) inold = 1;
-    if(!inold && newl[i].inum != 0){
-      memmove(shortnm, newl[i].name, 15);
-      shortnm[15] = 0;
-      snfound = 1;
-    }
-  }
-  check(snfound, "LFN >13 visible as new entry");
-  if(snfound){
-    char full[64];
-    newpath("/fat/", shortnm, full);
-    fd = open(full, O_RDONLY);
-    if(fd < 0){
-      printf("FAIL: reopen LFN via short name (%s)\n", full);
-      failed = 1;
-    } else {
-      char rbuf[64];
-      int rn = read(fd, rbuf, 64);
-      close(fd);
-      check(rn == 23 && memcmp(rbuf, ldata, 23) == 0,
-            "reopen LFN >13 via presented short name");
-    }
+  check(hasname(newl, nc, "LongFileNameTest.txt") >= 0,
+        "readdir shows full LFN >13 name");
+  fd = open("/fat/LongFileNameTest.txt", O_RDONLY);
+  if(fd < 0){
+    printf("FAIL: reopen LFN >13 by full name\n");
+    failed = 1;
+  } else {
+    char rbuf[64];
+    int rn = read(fd, rbuf, 64);
+    close(fd);
+    check(rn == 23 && memcmp(rbuf, ldata, 23) == 0,
+          "reopen LFN >13 by full name");
   }
 
   // ---- 12. unlink ----
@@ -307,6 +298,9 @@ main(void)
   unlink("/fat/FileDataX.txt");
 
   check(umount("/fat") == 0, "umount /fat");
+
+  free(oldl);
+  free(newl);
 
   if(failed){
     printf("fat32test: FAILED\n");

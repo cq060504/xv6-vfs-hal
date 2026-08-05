@@ -688,7 +688,7 @@ static int freaddir(struct vnode *vp, uint64 buf, uint off){
         }
         
         // This is a regular entry. Reconstruct the full name from preceding LFN entries.
-        struct {ushort inum; char name[14];} vde;
+        struct vdirent vde;
         vde.inum = ((uint)d.DIR_FstClusHI<<16) | d.DIR_FstClusLO;
         
         // Try to read backwards to find LFN entries
@@ -748,43 +748,21 @@ static int freaddir(struct vnode *vp, uint64 buf, uint off){
         }
         
         if(lfn_count > 0 && total_lfn_chars > 0){
-          // Build ASCII name from LFN buffer.
-          // ABI: struct dirent.name can hold at most 13 chars + NUL.
-          // If the LFN fits, emit it verbatim (it round-trips through
-          // dlookup, which matches LFNs case-insensitively).
-          // If it is longer than 13 chars, fall back to the 8.3 DOS name
-          // in the directory entry: that name is unique and dlookup's
-          // short-name match finds it exactly, so `ls` output stays usable.
+          // LFN entries are stored on disk in REVERSE order
+          // ([seq=N|LAST: tail] ... [seq=1: head] [short entry]), but the
+          // backward scan above walks seq=1 -> seq=N and therefore fills
+          // lfn_buf in FORWARD order: lfn_buf[0..12] holds the name head
+          // (seq=1), lfn_buf[(N-1)*13..] holds the name tail (seq=N).
+          // Just read it straight through.
           int nl = 0;
-          for(int i = 0; i < total_lfn_chars && nl < 13; i++){
-            if(lfn_buf[i] == 0) break;  // NUL terminator
-            if(lfn_buf[i] == 0xFFFF) break;  // padding
-            if(lfn_buf[i] < 128)
-              vde.name[nl++] = (char)lfn_buf[i];
+          for(int i = 0; i < total_lfn_chars && nl < VDIRSIZ - 1; i++){
+            ushort uc = lfn_buf[i];
+            if(uc == 0) break;       // NUL terminator
+            if(uc == 0xFFFF) continue; // padding
+            if(uc < 128)
+              vde.name[nl++] = (char)uc;
           }
-          // Check whether a non-padding char was cut off by the 13-char limit;
-          // if so the truncated name would not match dlookup (lookup uses the
-          // full LFN), so present the DOS short name instead.
-          int cut_off = 0;
-          for(int i = nl; i < total_lfn_chars; i++){
-            if(lfn_buf[i] != 0 && lfn_buf[i] != 0xFFFF && lfn_buf[i] < 128){
-              cut_off = 1;
-              break;
-            }
-          }
-          if(cut_off){
-            nl = 0;
-            for(int i = 0; i < 8 && d.DIR_Name[i] != ' '; i++)
-              vde.name[nl++] = (d.DIR_Name[i] >= 'A' && d.DIR_Name[i] <= 'Z') ? d.DIR_Name[i] + 32 : d.DIR_Name[i];
-            if(d.DIR_Name[8] != ' '){
-              vde.name[nl++] = '.';
-              for(int i = 8; i < 11 && d.DIR_Name[i] != ' '; i++)
-                vde.name[nl++] = (d.DIR_Name[i] >= 'A' && d.DIR_Name[i] <= 'Z') ? d.DIR_Name[i] + 32 : d.DIR_Name[i];
-            }
-            vde.name[nl] = 0;
-          } else {
-            vde.name[nl] = 0;
-          }
+          vde.name[nl] = 0;
         } else {
           // Use short 8.3 name
           int nl = 0;
@@ -840,13 +818,26 @@ static int fcreate(struct vnode *dir, char *nm, short type, struct vnode **new){
   if(dwrite_lfn(dir, off, lfn_cnt, nm, &de) < 0) return -1;
   
   if(type==V_DIR){
-    uint sec=clus_to_sec(fm,c); uchar z[512]; memset(z,0,512);
+    // Zero the ENTIRE cluster (all sectors), not just the first one, so that
+    // freaddir's 0x00 end-of-directory detection works correctly when
+    // sec_per_clus > 1.  Otherwise stale data in later sectors would be
+    // parsed as bogus (possibly valid-looking) directory entries.
+    uchar z[512]; memset(z,0,512);
     struct fat32_dirent *dot=(struct fat32_dirent*)z,*dotdot=(struct fat32_dirent*)(z+32);
     memset(dot->DIR_Name,' ',11);dot->DIR_Name[0]='.';dot->DIR_Attr=ATTR_DIRECTORY;
     dot->DIR_FstClusHI=(c>>16)&0xFFFF;dot->DIR_FstClusLO=c&0xFFFF;
     memset(dotdot->DIR_Name,' ',11);dotdot->DIR_Name[0]='.';dotdot->DIR_Name[1]='.';dotdot->DIR_Attr=ATTR_DIRECTORY;
     dotdot->DIR_FstClusHI=(dv->first_clus>>16)&0xFFFF;dotdot->DIR_FstClusLO=dv->first_clus&0xFFFF;
-    swrite(fm,sec,0,z,512);write_fat(fm,c,FAT32_EOC);
+
+    uint epc = fm->sec_per_clus ? fm->sec_per_clus : 1;
+    uchar zero512[512]; memset(zero512, 0, 512);
+    for(uint s = 0; s < epc; s++){
+      if(s == 0)
+        swrite(fm, clus_to_sec(fm, c), 0, z, 512);      // '.' and '..'
+      else
+        swrite(fm, clus_to_sec(fm, c) + s, 0, zero512, 512);  // zero tail sectors
+    }
+    write_fat(fm,c,FAT32_EOC);
   }
   if(new){
     *new=fvalloc(fm,c,0,de.DIR_Attr);

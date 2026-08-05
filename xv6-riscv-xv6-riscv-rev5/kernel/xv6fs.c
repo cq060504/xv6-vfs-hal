@@ -15,12 +15,6 @@ extern struct superblock sb;
 static struct vnode_ops xv6fs_vnops;
 static struct vfs_ops xv6fs_vfsops;
 
-// VFS-level dirent returned by readdir (must match vfs.h definition)
-struct vdirent {
-  ushort inum;
-  char name[14];
-};
-
 struct xv6fs_vnode_priv {
   struct inode *ip;
 };
@@ -206,7 +200,11 @@ xv6fs_readdir(struct vnode *vp, uint64 buf, uint off)
   iunlock(ip);
 
   vde.inum = de.inum;
-  safestrcpy(vde.name, de.name, 14);
+  // de.name is a 14-byte nonstring field (no guaranteed NUL); copying it
+  // with safestrcpy would read past the struct into neighbouring memory.
+  // Copy exactly DIRSIZ bytes and NUL-terminate ourselves.
+  memmove(vde.name, de.name, DIRSIZ);
+  vde.name[DIRSIZ] = '\0';
 
   if(copyout(myproc()->pagetable, buf, (char*)&vde, sizeof(vde)) < 0)
     return -1;

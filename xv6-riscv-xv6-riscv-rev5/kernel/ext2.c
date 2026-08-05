@@ -616,11 +616,6 @@ ext2_stat(struct vnode *vp, uint64 addr)
 }
 
 // VFS-level dirent returned by readdir
-struct vdirent {
-  ushort inum;
-  char name[14];
-};
-
 static int
 ext2_readdir(struct vnode *vp, uint64 buf, uint off)
 {
@@ -641,7 +636,7 @@ ext2_readdir(struct vnode *vp, uint64 buf, uint off)
       struct vdirent vde;
       vde.inum = de->inode;
       uint nmlen = de->name_len;
-      if(nmlen > 13) nmlen = 13;
+      if(nmlen > VDIRSIZ - 1) nmlen = VDIRSIZ - 1;
       memmove(vde.name, de->name, nmlen);
       vde.name[nmlen] = '\0';
       brelse(bp);

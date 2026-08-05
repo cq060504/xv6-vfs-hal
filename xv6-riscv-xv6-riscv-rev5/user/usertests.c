@@ -1398,10 +1398,7 @@ concreate(char *s)
   char file[3];
   int i, pid, n, fd;
   char fa[N];
-  struct {
-    ushort inum;
-    char name[DIRSIZ];
-  } de;
+  struct vdirent de;
 
   file[0] = 'C';
   file[2] = '\0';
@@ -1434,7 +1431,7 @@ concreate(char *s)
   memset(fa, 0, sizeof(fa));
   fd = open(".", 0);
   n = 0;
-  while(read(fd, &de, sizeof(de)) > 0){
+  while(read(fd, &de, sizeof(de)) == sizeof(de)){
     if(de.inum == 0)
       continue;
     if(de.name[0] == 'C' && de.name[2] == '\0'){

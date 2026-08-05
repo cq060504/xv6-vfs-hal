@@ -123,7 +123,7 @@ sys_fstat(void)
 uint64
 sys_link(void)
 {
-  char name[14], new[MAXPATH], old[MAXPATH];
+  char name[VDIRSIZ], new[MAXPATH], old[MAXPATH];
   struct vnode *ip, *dp;
 
   if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
@@ -151,7 +151,7 @@ sys_link(void)
 uint64
 sys_unlink(void)
 {
-  char name[14], path[MAXPATH];
+  char name[VDIRSIZ], path[MAXPATH];
   struct vnode *dp;
 
   if(argstr(0, path, MAXPATH) < 0)
@@ -228,7 +228,7 @@ sys_open(void)
 uint64
 sys_mkdir(void)
 {
-  char name[14], path[MAXPATH];
+  char name[VDIRSIZ], path[MAXPATH];
   struct vnode *dp;
 
   if(argstr(0, path, MAXPATH) < 0)
@@ -245,7 +245,7 @@ sys_mkdir(void)
 uint64
 sys_mknod(void)
 {
-  char name[14], path[MAXPATH];
+  char name[VDIRSIZ], path[MAXPATH];
   int major, minor;
   struct vnode *dp;
 

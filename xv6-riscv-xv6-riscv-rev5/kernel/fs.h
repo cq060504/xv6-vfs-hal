@@ -61,6 +61,18 @@ struct dirent {
   char name[DIRSIZ] __attribute__((nonstring));
 };
 
+// VFS directory entry returned by readdir() to user programs.
+// This is the userspace-visible ABI shared by all filesystems (xv6,
+// ext2, FAT32).  It is deliberately separate from the on-disk
+// struct dirent above (whose 14-byte name is fixed by the xv6 disk
+// format), so that FAT32 long file names (up to 255 chars) and ext2
+// long names survive the trip through sys_read without truncation.
+#define VDIRSIZ 256
+struct vdirent {
+  ushort inum;
+  char name[VDIRSIZ];
+};
+
 // in-memory copy of an inode
 struct inode {
   uint dev;           // Device number

@@ -115,7 +115,7 @@ fileread(struct file *f, uint64 addr, int n)
       r = vfs_readdir(f->vnode, addr, f->off);
       if(r > 0){
         f->off = r;
-        r = sizeof(struct dirent);
+        r = sizeof(struct vdirent);
       }
     } else {
       r = vfs_read(f->vnode, addr, n, f->off);

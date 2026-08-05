@@ -212,7 +212,7 @@ static int test_l2_readdir(void) {
     CHKF(fd >= 0, "open /mnt dir failed: fd=%d", fd);
 
     int found_dot = 0, found_dotdot = 0, found_f = 0, found_d = 0;
-    struct dirent de;
+    struct vdirent de;
     while (read(fd, &de, sizeof(de)) == sizeof(de)) {
       if (de.inum == 0) continue;  // 空 dirent
       if (strcmp(de.name, ".") == 0) found_dot = 1;
@@ -436,7 +436,7 @@ static int test_l3_namei(void) {
     fd = open("..", O_RDONLY);
     CHKF(fd >= 0, "open .. from mount root failed: fd=%d", fd);
     // 读取 .. 目录，验证可以找到 xv6fs 根目录的条目 (如 "tests")
-    struct dirent de;
+    struct vdirent de;
     int found_tests = 0;
     while (read(fd, &de, sizeof(de)) == sizeof(de)) {
       if (de.inum == 0) continue;
