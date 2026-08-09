@@ -54,7 +54,7 @@ echo "    F4: 10KB 大文件 (跨簇链)"
 echo "    F5: mkdir / 嵌套文件 / 子目录 readdir (. .. 条目)"
 echo "    F6: . 与 .. 路径查找"
 echo "    F7: 根目录 readdir 列表"
-echo "    F8: LFN (<=13 字符全名回读; >13 字符短名回退与重开)"
+echo "    F8: LFN (<=13 字符全名回读; >13 字符完整长名显示与按全名重开)"
 echo "    F9: unlink (普通 / LFN / 非空目录拒绝 / 空目录)"
 echo ""
 fat32test
