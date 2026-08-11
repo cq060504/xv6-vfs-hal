@@ -29,7 +29,7 @@
 - **VFS虚拟文件系统层** — 统一vnode抽象，13个操作接口，挂载点自动穿越，`..`跨文件系统返回，引用计数生命周期管理
 - **ext2文件系统实现** — 1156行，覆盖文件、目录、设备节点、读写、删除、硬链接、时间戳和单间接块
 - **xv6fs胶水层** — 497行，将原生inode包装为vnode；`kernel/fs.c`和`kernel/log.c`保持原实现
-- **FAT32文件系统** — 1044行，支持8.3短名、VFAT LFN、簇链读写、O_APPEND和O_TRUNC，双架构运行
+- **FAT32文件系统** — 1076行，支持8.3短名、VFAT LFN、簇链读写、O_APPEND和O_TRUNC，双架构运行
 - **HAL硬件抽象层** — 公共接口覆盖启动、页表、中断、定时器、串口、上下文切换和块设备；RISC-V与LoongArch分别实现
 - **LoongArch稳定性机制** — 软件TLB重填、NR/NX权限转换、高地址PGDH内核栈guard、UART定时轮询后备
 - **三块独立设备** — dev=1/2/3分别承载xv6fs、ext2和FAT32；RISC-V使用virtio-mmio，LoongArch使用loader-backed RAM disk
@@ -143,7 +143,7 @@ fat32test
 ├────────────┬────────────┬────────────────────┤
 │  xv6fs胶水  │  ext2实现  │  FAT32实现         │
 │ xv6fs.c   │ ext2.c/h  │  fat32.c/h          │
-│  497行     │ 1156行    │ 1044行             │
+│  497行     │ 1156行    │ 1076行             │
 │            │            │                    │
 │ 包装原生   │ 完整ext2   │ FAT32文件系统      │
 │ inode为    │ 文件系统    │ 读写支持           │
@@ -256,7 +256,7 @@ LoongArch的三设备布局为：
 
 `-bios`仅装载约120KiB内核，文件系统镜像通过generic loader进入保留RAM。`PHYSTOP`以下内存由`kalloc()`管理，三个RAM disk窗口位于`PHYSTOP`以上。驱动写入在当前QEMU进程中可见，退出后未回写宿主镜像。
 
-完整代码说明见[`决赛实验报告.md`](xv6-riscv-xv6-riscv-rev5/决赛实验报告.md)第五至第七章和[`答辩代码详解.md`](xv6-riscv-xv6-riscv-rev5/答辩代码详解.md)。
+完整代码说明见[`决赛实验报告.md`](xv6-riscv-xv6-riscv-rev5/决赛实验报告.md)第五至第七章。
 
 ---
 
@@ -285,16 +285,14 @@ xv6-vfs-hal/
 ├── xv6-riscv-xv6-riscv-rev5/              ← 主代码目录
 │   ├── xv6-vfs-hal-code.patch             ← 完整变更补丁（与原始 xv6-riscv 的 diff）
 │   ├── 决赛实验报告.md                     ← 详细设计文档（11章）
-│   ├── 答辩代码详解.md                     ← HAL接口和重点代码逐函数说明
 │   ├── DESIGN_DOC.pdf                     ← 设计文档PDF
 │   ├── 操作指南.md                        ← Docker 环境搭建与测试流程
 │   ├── 演示视频.mp4                       ← 项目演示视频
-│   ├── 阶段报告.pptx                      ← 项目汇报幻灯片
 │   ├── kernel/                            ← 内核源码
 │   │   ├── vfs.c / vfs.h                  ← VFS核心（669行）
 │   │   ├── ext2.c / ext2.h                ← ext2实现（1156行）
 │   │   ├── xv6fs.c                        ← xv6fs胶水层（497行）
-│   │   ├── fat32.c / fat32.h              ← FAT32实现（1044行）
+│   │   ├── fat32.c / fat32.h              ← FAT32实现（1076行）
 │   │   ├── file.c / file.h                ← 文件描述符层
 │   │   ├── sysfile.c                      ← 系统调用适配
 │   │   └── ...
@@ -321,7 +319,7 @@ xv6-vfs-hal/
 | VFS核心 | `kernel/vfs.c` + `kernel/vfs.h` | 669行 |
 | ext2实现 | `kernel/ext2.c` + `kernel/ext2.h` | 1156行 |
 | xv6fs胶水 | `kernel/xv6fs.c` | 497行 |
-| FAT32 | `kernel/fat32.c` + `kernel/fat32.h` | 1044行 |
+| FAT32 | `kernel/fat32.c` + `kernel/fat32.h` | 1076行 |
 | HAL公共接口 | `hal/hal.h` + `hal/hal_*.h` | 200行 |
 | RISC-V HAL | `hal/riscv/` | 1526行 |
 | LoongArch HAL | `hal/loongarch/` | 1673行 |
