@@ -1,5 +1,9 @@
-// FAT32 filesystem for xv6 VFS (RISC-V, 512-byte native sectors).
-// Supports both short 8.3 names and VFAT Long File Names (LFN).
+// FAT32 filesystem implementation for xv6 VFS.
+//
+// Supports both RISC-V and LoongArch (dev=3).  Native sector size is 512
+// bytes while xv6 uses BSIZE=1024, so all disk I/O goes through sread()/
+// swrite() which translate sector numbers to xv6 block numbers.
+// Supports short 8.3 names and VFAT Long File Names (LFN, <= 255 chars).
 
 #include "types.h"
 #include "riscv.h"
@@ -17,6 +21,7 @@
 static struct vnode_ops fat32_vnops;
 static struct vfs_ops  fat32_vfsops;
 
+// Per-mount private data
 struct fat32_mount {
   uint dev; uchar sec_per_clus; uint rsvd_sec_cnt;
   uchar num_fats; uint fat_sz; uint first_data_sec;
@@ -25,6 +30,8 @@ struct fat32_mount {
   struct sleeplock lock;
   struct mount *vfs_mount; // back-pointer to VFS mount
 };
+
+// Per-vnode private data
 struct fat32_vnode {
   struct fat32_mount *fm; uint first_clus; uint file_size;
   uchar attrs; int dirty;
@@ -565,6 +572,8 @@ static int count_lfn_backwards(struct vnode *dir, uint short_off){
   return lfn_cnt;
 }
 
+// fvalloc -- create a vnode for a FAT32 entry (cluster c, size sz, attrs at).
+// Allocates a VFS vnode plus a fat32_vnode private struct and wires them up.
 static struct vnode* fvalloc(struct fat32_mount *fm, uint c, uint sz, uchar at){
   struct vnode *vp=alloc_vnode(); if(!vp) return 0;
   struct fat32_vnode *fv=kalloc(); if(!fv){vput(vp);return 0;}
@@ -576,8 +585,12 @@ static struct vnode* fvalloc(struct fat32_mount *fm, uint c, uint sz, uchar at){
   vp->dev=fm->dev;vp->ops=&fat32_vnops;vp->priv=fv;vp->inum=c;vp->size=sz;
   return vp;
 }
+// fdestroy -- release the fat32_vnode private struct when the vnode is freed.
 static void fdestroy(void *arg){if(arg)kfree(arg);}
 
+// flookup -- look up `nm` in directory `dir`; return vnode in *res.
+// Handles "." / ".." specially (root has no on-disk entries) and delegates
+// name matching (short name + LFN) to dlookup().
 static int flookup(struct vnode *dir, char *nm, struct vnode **res){
   struct fat32_vnode *dv = (struct fat32_vnode*)dir->priv;
   
@@ -607,6 +620,9 @@ static int flookup(struct vnode *dir, char *nm, struct vnode **res){
   }
   return *res?0:-1;
 }
+// fread -- read n bytes at offset off into user buffer buf.
+// Follows the FAT cluster chain from the file's first cluster, translating
+// sector numbers via clus_to_sec() and sread().  Clamps to file_size.
 static int fread(struct vnode *vp, uint64 buf, int n, uint off){
   struct fat32_vnode *fv=vp->priv; struct fat32_mount *fm=fv->fm;
   if(off>=fv->file_size) return 0;
@@ -625,6 +641,9 @@ static int fread(struct vnode *vp, uint64 buf, int n, uint off){
   }
   return total;
 }
+// fwrite -- write n bytes from user buffer buf at offset off.
+// Extends the FAT cluster chain on demand (alloc_clus when past EOC) and
+// persists size/first-cluster via sync_dirent() so a later open() sees them.
 static int fwrite(struct vnode *vp, uint64 buf, int n, uint off){
   struct fat32_vnode *fv=vp->priv; struct fat32_mount *fm=fv->fm;
   uint c=fv->first_clus, bpc=fm->sec_per_clus*fm->bps, total=0;
@@ -653,6 +672,7 @@ static int fwrite(struct vnode *vp, uint64 buf, int n, uint off){
     sync_dirent(vp);
   return total;
 }
+// fstat -- fill a struct stat for this vnode into user address addr.
 static int fstat(struct vnode *vp, uint64 addr){
   struct fat32_vnode *fv=vp->priv; struct stat st;
   st.dev=vp->dev;st.ino=fv->first_clus;
@@ -906,9 +926,13 @@ static int funlink(struct vnode *dir, char *nm){
   return 0;
 }
 
+// fmkdir -- create a subdirectory; delegates to fcreate(V_DIR).
 static int fmkdir(struct vnode *dir, char *nm){
   struct vnode *n=0; int r=fcreate(dir,nm,V_DIR,&n); if(!r&&n) vput(n); return r;
 }
+
+// ftrunc -- truncate a file to zero length: free the cluster chain and
+// reset size to 0, then persist via sync_dirent().
 static int ftrunc(struct vnode *vp){
   struct fat32_vnode *fv=vp->priv;
   if(fv->first_clus){free_chain(fv->fm,fv->first_clus);fv->first_clus=0;}
@@ -918,11 +942,19 @@ static int ftrunc(struct vnode *vp){
   return 0;
 }
 
+// froot -- return the mounted FS root vnode (ref held).
 static struct vnode* froot(struct mount *mp){return vget(mp->root);}
+
+// fumount -- release mount-private data and root vnode on umount.
 static void fumount(struct mount *mp){
   if(mp->priv){vput(mp->root);kfree(mp->priv);}
   mp->priv=0;mp->root=0;mp->ops=0;
 }
+
+// fat32_mount -- mount a FAT32 filesystem from device `dev`.
+// Reads the BPB from sector 0, validates the 0x55AA boot signature and
+// FAT32 magic (BPB_FATSz32 != 0), then builds the mount structure and
+// creates the root directory vnode (root cluster from BPB_RootClus).
 struct mount* fat32_mount(uint dev){
   struct buf *bp=bread(dev,0); if(!bp) return 0;
   struct fat32_bpb bpb; memmove(&bpb,bp->data,sizeof(bpb));
