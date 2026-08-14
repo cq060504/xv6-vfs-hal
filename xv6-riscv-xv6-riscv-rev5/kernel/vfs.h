@@ -38,6 +38,7 @@ struct vnode {
   int ref;
   struct sleeplock lock;
   uint inum;         // FS-specific inode number; meaningful only within mp
+  uint ikey;         // secondary identity key (fat32: pdir_clus; else 0)
   uint size;         // cached file size (for O_APPEND etc.); maintained by FS backend
   void *priv;        // FS-private data (e.g. struct inode*)
 };
@@ -78,6 +79,7 @@ struct vnode* vfs_root(void);
 
 struct vnode* alloc_vnode(void);
 struct vnode* vget(struct vnode*);
+struct vnode* vfs_iget(struct mount*, uint inum, uint ikey);
 void          vput(struct vnode*);
 void          vn_lock(struct vnode*);
 void          vn_unlock(struct vnode*);

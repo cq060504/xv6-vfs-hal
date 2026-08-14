@@ -203,6 +203,7 @@ alloc_vnode(void)
       vnode_table[i].mp = 0;
       vnode_table[i].priv = 0;
       vnode_table[i].inum = 0;
+      vnode_table[i].ikey = 0;
       vnode_table[i].major = 0;
       vnode_table[i].minor = 0;
       release(&vnode_lock);
@@ -220,6 +221,29 @@ vget(struct vnode *vp)
   vp->ref++;
   release(&vnode_lock);
   return vp;
+}
+
+// Active-vnode deduplication: if an active vnode with the given identity
+// (mount, inum, ikey) already exists, take a new reference to it and return
+// it; otherwise return 0.  This mirrors xv6's iget() identity guarantee: while
+// a file is alive in memory there is exactly one canonical vnode for it, so
+// concurrent opens share a single in-memory copy instead of each allocating a
+// fresh one with an independent private snapshot.
+struct vnode*
+vfs_iget(struct mount *mp, uint inum, uint ikey)
+{
+  struct vnode *v;
+
+  acquire(&vnode_lock);
+  for(v = vnode_table; v < vnode_table + NVNODE; v++){
+    if(v->ref > 0 && v->mp == mp && v->inum == inum && v->ikey == ikey){
+      v->ref++;
+      release(&vnode_lock);
+      return v;
+    }
+  }
+  release(&vnode_lock);
+  return 0;
 }
 
 void

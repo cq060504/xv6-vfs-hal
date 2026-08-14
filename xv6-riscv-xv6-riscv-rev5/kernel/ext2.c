@@ -130,6 +130,7 @@ ext2_vnode_alloc(struct ext2_mount_priv *mp, uint inum, struct ext2_inode_disk *
   vp->ops   = &ext2_vnops;
   vp->priv  = priv;
   vp->inum  = inum;
+  vp->ikey  = 0;
   vp->size  = ino->i_size;
   return vp;
 }
@@ -155,22 +156,45 @@ ext2_destroy(void *arg)
 
 // ---------------------------------------------------------------------------
 // iget  --  get a vnode by inode number (with ref)
+// Deduplicates: if an active vnode for this inode already exists, reuse it
+// instead of creating a fresh vnode with an independent on-disk snapshot.
 // ---------------------------------------------------------------------------
 static struct vnode*
 ext2_iget(struct ext2_mount_priv *mp, uint inum)
 {
+  struct vnode *hit = vfs_iget(mp->mnt, inum, 0);   // ext2 has no secondary key
+  if(hit)
+    return hit;
+
   struct ext2_inode_disk ino;
   if(read_inode(mp, inum, &ino) < 0) return 0;
   return ext2_vnode_alloc(mp, inum, &ino);
+}
+
+// Write back an ext2 inode's metadata immediately if dirty.  Called at the
+// end of each modifying vnode_ops so that long-lived vnodes (root, cwd,
+// mountpoint) do not keep their i_size/i_links_count/mtime suspended in
+// memory indefinitely.  The destroy-time writeback is kept as a backstop.
+static void
+ext2_writeback(struct vnode *vp)
+{
+  struct ext2_vnode_priv *priv = (struct ext2_vnode_priv*)vp->priv;
+  if(priv->dirty && priv->mp){
+    write_inode(priv->mp, priv->inum, &priv->ino);
+    priv->dirty = 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // bitmap helpers (single block group, bitmap fits in one block)
 // ---------------------------------------------------------------------------
 
-// Allocate a free bit from bitmap block `bb`, bits 1..nbits-1 (bit 0 unused)
+// Allocate a free bit from bitmap block `bb`, bits 1..nbits-1 (bit 0 unused).
+// The returned number is bit_index + base.  Block bitmaps number blocks from
+// 0 (base=0); inode bitmaps number inodes from 1 (base=1): inode n occupies
+// bit (n-1) of the inode bitmap.
 static int
-bitmap_alloc(struct ext2_mount_priv *mp, uint bb, uint nbits)
+bitmap_alloc(struct ext2_mount_priv *mp, uint bb, uint nbits, int base)
 {
   struct buf *bp = bread(mp->dev, bb);
   if(bp == 0) return -1;
@@ -181,7 +205,7 @@ bitmap_alloc(struct ext2_mount_priv *mp, uint bb, uint nbits)
       bwrite(bp);
       releasesleep(&mp->lock);
       brelse(bp);
-      return i;
+      return i + base;
     }
   }
   releasesleep(&mp->lock);
@@ -189,13 +213,15 @@ bitmap_alloc(struct ext2_mount_priv *mp, uint bb, uint nbits)
   return -1;
 }
 
-// B1: bitmap_free now acquires the same lock as bitmap_alloc
+// B1: bitmap_free now acquires the same lock as bitmap_alloc.
+// `n` is the resource number (block or inode); base converts it to a bit index.
 static void
-bitmap_free(struct ext2_mount_priv *mp, uint bb, uint n)
+bitmap_free(struct ext2_mount_priv *mp, uint bb, uint n, int base)
 {
   struct buf *bp = bread(mp->dev, bb);
   if(bp == 0) return;
   acquiresleep(&mp->lock);
+  n -= base;
   bp->data[n / 8] &= ~(1 << (n % 8));
   bwrite(bp);
   releasesleep(&mp->lock);
@@ -220,7 +246,7 @@ ext2_sb_write(struct ext2_mount_priv *mp)
 static uint
 ext2_balloc(struct ext2_mount_priv *mp)
 {
-  int b = bitmap_alloc(mp, mp->bg.bg_block_bitmap, mp->sb.s_blocks_count);
+  int b = bitmap_alloc(mp, mp->bg.bg_block_bitmap, mp->sb.s_blocks_count, 0);
   if(b < 0) return 0;
   acquiresleep(&mp->lock);
   mp->sb.s_free_blocks_count--;
@@ -232,7 +258,7 @@ ext2_balloc(struct ext2_mount_priv *mp)
 static void
 ext2_bfree(struct ext2_mount_priv *mp, uint blockno)
 {
-  bitmap_free(mp, mp->bg.bg_block_bitmap, blockno);
+  bitmap_free(mp, mp->bg.bg_block_bitmap, blockno, 0);
   acquiresleep(&mp->lock);
   mp->sb.s_free_blocks_count++;
   ext2_sb_write(mp);
@@ -245,12 +271,12 @@ ext2_bfree(struct ext2_mount_priv *mp, uint blockno)
 static uint
 ext2_ialloc(struct ext2_mount_priv *mp, ushort mode)
 {
-  int inum = bitmap_alloc(mp, mp->bg.bg_inode_bitmap, mp->sb.s_inodes_count);
+  int inum = bitmap_alloc(mp, mp->bg.bg_inode_bitmap, mp->sb.s_inodes_count, 1);
   if(inum < 0) return 0;
 
   // initialise inode
   struct buf *bp = bread(mp->dev, ino_block(mp, inum));
-  if(bp == 0){ bitmap_free(mp, mp->bg.bg_inode_bitmap, inum); return 0; }
+  if(bp == 0){ bitmap_free(mp, mp->bg.bg_inode_bitmap, inum, 1); return 0; }
   struct ext2_inode_disk *ino = (struct ext2_inode_disk*)(bp->data + ino_offset(mp,inum));
   memset(ino, 0, sizeof(struct ext2_inode_disk));
   ino->i_mode = mode;
@@ -275,7 +301,7 @@ ext2_ialloc(struct ext2_mount_priv *mp, ushort mode)
 static void
 ext2_ifree(struct ext2_mount_priv *mp, uint inum)
 {
-  bitmap_free(mp, mp->bg.bg_inode_bitmap, inum);
+  bitmap_free(mp, mp->bg.bg_inode_bitmap, inum, 1);
   acquiresleep(&mp->lock);
   mp->sb.s_free_inodes_count++;
   ext2_sb_write(mp);
@@ -590,6 +616,7 @@ ext2_write(struct vnode *vp, uint64 buf, int n, uint off)
   }
   // B6: update modification time on write
   ext2_update_time(priv, 0, 1);
+  ext2_writeback(vp);
   return total;
 }
 
@@ -710,7 +737,9 @@ ext2_create(struct vnode *dir, char *name, short type, struct vnode **new)
   if(new){
     *new = ext2_iget(mp, inum);
     if(*new == 0) return -1;
+    ext2_writeback(*new);
   }
+  ext2_writeback(dir);
   return 0;
 }
 
@@ -779,6 +808,11 @@ ext2_unlink(struct vnode *dir, char *name)
         bwrite(bp);
         brelse(bp);
 
+        // A directory's nlink counts both "." and ".." (== 2 at creation);
+        // removing a directory therefore drops the count by 2 so that
+        // unlinking a directory drives nlink to 0 and frees the inode.
+        if(is_dir)
+          ino.i_links_count--;
         // Decrement link count; if zero, mark orphaned (actual free in destroy)
         ino.i_links_count--;
         if(ino.i_links_count == 0){
@@ -794,6 +828,10 @@ ext2_unlink(struct vnode *dir, char *name)
           ino.i_ctime = ticks;
           write_inode(dp->mp, inum, &ino);
         }
+        // Persist the parent directory's i_size/i_links_count/mtime now;
+        // the parent may be a long-lived vnode (cwd/root) that never gets
+        // destroyed, so its metadata must not wait for writeback-on-free.
+        ext2_writeback(dir);
         return 0;
       }
       boff += de->rec_len;
@@ -842,6 +880,8 @@ ext2_link(struct vnode *dir, char *name, struct vnode *old)
     opriv->dirty = 1;
     return -1;
   }
+  ext2_writeback(old);
+  ext2_writeback(dir);
   return 0;
 }
 
@@ -872,6 +912,7 @@ ext2_mknod(struct vnode *dir, char *name, int major, int minor)
     ext2_ifree(mp, inum);
     return -1;
   }
+  ext2_writeback(dir);
   return 0;
 }
 
@@ -918,6 +959,7 @@ ext2_truncate(struct vnode *vp)
   vp->size = 0;
   // B6: update modification time
   ext2_update_time(priv, 0, 1);
+  ext2_writeback(vp);
   return 0;
 }
 
