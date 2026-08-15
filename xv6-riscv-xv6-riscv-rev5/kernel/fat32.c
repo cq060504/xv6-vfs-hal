@@ -81,12 +81,23 @@ static void write_fat(struct fat32_mount *fm, uint c, uint v){
   }
   brelse(bp);
 }
+// Cluster allocation / free take fm->lock: read_fat()/write_fat() touch the
+// shared FAT table, and concurrent creates from different directories could
+// otherwise scan it simultaneously and hand out the same FREE cluster twice
+// (double allocation), or free a chain concurrently with an allocator scan
+// (P2 fix).  The lock is taken only across the FAT scan/mutation, so it never
+// nests with vnode locks.
 static uint alloc_clus(struct fat32_mount *fm){
-  for(uint c=2;c<fm->tot_clus+2;c++) if(read_fat(fm,c)==FAT32_FREE){write_fat(fm,c,FAT32_EOC);return c;}
+  acquiresleep(&fm->lock);
+  for(uint c=2;c<fm->tot_clus+2;c++)
+    if(read_fat(fm,c)==FAT32_FREE){ write_fat(fm,c,FAT32_EOC); releasesleep(&fm->lock); return c; }
+  releasesleep(&fm->lock);
   return 0;
 }
 static void free_chain(struct fat32_mount *fm, uint c){
+  acquiresleep(&fm->lock);
   while(c>=2&&c<FAT32_EOC_MIN){uint n=read_fat(fm,c);write_fat(fm,c,FAT32_FREE);if(n>=FAT32_EOC_MIN)break;c=n;}
+  releasesleep(&fm->lock);
 }
 
 // ---- 8.3 short name helpers ----
@@ -574,15 +585,37 @@ static int count_lfn_backwards(struct vnode *dir, uint short_off){
 
 // fvalloc -- create a vnode for a FAT32 entry (cluster c, size sz, attrs at).
 // Allocates a VFS vnode plus a fat32_vnode private struct and wires them up.
-static struct vnode* fvalloc(struct fat32_mount *fm, uint c, uint sz, uchar at){
-  struct vnode *vp=alloc_vnode(); if(!vp) return 0;
+//
+// FAT32 has no inode numbers, and empty files all share first_clus==0, so the
+// only stable on-disk identity of a file is the location of its directory
+// entry: (parent dir first cluster, byte offset of the short entry within that
+// dir).  That pair is encoded as vnode identity (vp->inum = pdir, vp->ikey =
+// deoff) and MUST be set for every file vnode so that concurrent opens of the
+// same file share a single canonical in-memory vnode via vfs_iget().  Without
+// it, each open would mint a fresh fat32_vnode with an independent
+// pdir_clus/dent_off/file_size snapshot, splitting the page cache and letting
+// writes through different vnodes clobber each other (P0 fix).
+//
+// NOTE: never key on first_clus alone: two empty files in different
+// directories both have c==0 and would be (wrongly) coalesced.
+static struct vnode* fvalloc(struct fat32_mount *fm, uint c, uint sz, uchar at,
+                             uint pdir, uint deoff){
+  struct mount *mp=fm->vfs_mount;
+
+  // Active-vnode deduplication: if a live vnode for this exact on-disk entry
+  // already exists, take a new reference to it and return it instead of
+  // allocating a fresh copy.
+  struct vnode *vp=vfs_iget(mp, pdir, deoff);
+  if(vp) return vp;
+
+  vp=alloc_vnode(); if(!vp) return 0;
   struct fat32_vnode *fv=kalloc(); if(!fv){vput(vp);return 0;}
   fv->fm=fm;fv->first_clus=c;fv->file_size=sz;fv->attrs=at;fv->dirty=0;
-  fv->pdir_clus=0;   // set by flookup/fcreate when the parent dir entry is known
-  fv->dent_off=0;
+  fv->pdir_clus=pdir;
+  fv->dent_off=deoff;
   vp->type=(at&ATTR_DIRECTORY)?V_DIR:V_FILE;
-  vp->mp=fm->vfs_mount;
-  vp->dev=fm->dev;vp->ops=&fat32_vnops;vp->priv=fv;vp->inum=c;vp->size=sz;
+  vp->mp=mp;
+  vp->dev=fm->dev;vp->ops=&fat32_vnops;vp->priv=fv;vp->inum=pdir;vp->ikey=deoff;vp->size=sz;
   return vp;
 }
 // fdestroy -- release the fat32_vnode private struct when the vnode is freed.
@@ -610,14 +643,7 @@ static int flookup(struct vnode *dir, char *nm, struct vnode **res){
   uint off;
   if(dlookup(dir, nm, &de, &off, lfn)) return -1;
   uint c=((uint)de.DIR_FstClusHI<<16)|de.DIR_FstClusLO;
-  *res=fvalloc(dv->fm, c, de.DIR_FileSize, de.DIR_Attr);
-  if(*res){
-    // Remember where this directory entry lives so later file-size /
-    // first-cluster updates can be written back to disk (B1 fix).
-    struct fat32_vnode *nfv = (*res)->priv;
-    nfv->pdir_clus = dv->first_clus;
-    nfv->dent_off = off;
-  }
+  *res=fvalloc(dv->fm, c, de.DIR_FileSize, de.DIR_Attr, dv->first_clus, off);
   return *res?0:-1;
 }
 // fread -- read n bytes at offset off into user buffer buf.
@@ -636,6 +662,31 @@ static int fread(struct vnode *vp, uint64 buf, int n, uint off){
     uchar tmp[512];
     if(sread(fm,sec,bo,tmp,len)<0) return -1;
     if(copyout(myproc()->pagetable,buf+total,(char*)tmp,len)<0) return -1;
+    total+=len; in+=len;
+    if(in>=bpc){in=0;c=read_fat(fm,c);}
+  }
+  return total;
+}
+// fread_kernel -- read n bytes at offset off into a KERNEL buffer (direct
+// memmove, no copyout).  exec() loads ELF headers and segments through
+// vfs_read_kernel(), which calls the per-FS read_kernel hook with a kernel
+// address; the user-space read path (fread) copies out to the process
+// pagetable instead, so without this hook exec on a FAT32-resident program
+// fails with vfs_read_kernel() returning -1 (P1 fix).  Mirrors ext2's
+// ext2_read_kernel / xv6fs's readi(...,0,...) semantics.
+static int fread_kernel(struct vnode *vp, uint64 buf, int n, uint off){
+  struct fat32_vnode *fv=vp->priv; struct fat32_mount *fm=fv->fm;
+  if(off>=fv->file_size) return 0;
+  if(off+n>fv->file_size) n=fv->file_size-off;
+  uint c=fv->first_clus, bpc=fm->sec_per_clus*fm->bps, cskip=off/bpc, total=0;
+  for(uint i=0;i<cskip&&c>=2&&c<FAT32_EOC_MIN;i++) c=read_fat(fm,c);
+  uint in=off%bpc;
+  while(total<n&&c>=2&&c<FAT32_EOC_MIN){
+    uint sec=clus_to_sec(fm,c)+in/fm->bps, bo=in%fm->bps, len=fm->bps-bo;
+    if(len>n-total) len=n-total;
+    uchar tmp[512];
+    if(sread(fm,sec,bo,tmp,len)<0) return -1;
+    memmove((void*)buf+total, tmp, len);  // kernel address, not user pagetable
     total+=len; in+=len;
     if(in>=bpc){in=0;c=read_fat(fm,c);}
   }
@@ -817,7 +868,12 @@ static int fcreate(struct vnode *dir, char *nm, short type, struct vnode **new){
   }
   
   uint off;
-  if(dfree(dir, &off, lfn_cnt) < 0) return -1;
+  if(dfree(dir, &off, lfn_cnt) < 0){
+    // dfree failed (disk full / no contiguous slot): roll back the cluster
+    // pre-allocated for a directory so it is not leaked (P2 fix).
+    if(c) free_chain(fm,c);
+    return -1;
+  }
   
   // Build short directory entry
   struct fat32_dirent de; memset(&de, 0, 32);
@@ -834,8 +890,27 @@ static int fcreate(struct vnode *dir, char *nm, short type, struct vnode **new){
   de.DIR_FstClusHI = (c>>16) & 0xFFFF;
   de.DIR_FstClusLO = c & 0xFFFF;
   
+  // Allocate the vnode BEFORE writing anything to disk.  If vnode allocation
+  // failed after the dir entry was flushed, the on-disk entry would become a
+  // ghost (a dangling name pointing at nothing) and the cluster would leak;
+  // creating the vnode first makes every downstream failure trivially
+  // recoverable (P2 fix).
+  struct vnode *vn = 0;
+  if(new){
+    vn = fvalloc(fm,c,0,de.DIR_Attr, dv->first_clus, off + lfn_cnt*32);
+    if(!vn){ if(c) free_chain(fm,c); return -1; }
+    *new = vn;
+  }
+
   // Write LFN entries + short entry
-  if(dwrite_lfn(dir, off, lfn_cnt, nm, &de) < 0) return -1;
+  if(dwrite_lfn(dir, off, lfn_cnt, nm, &de) < 0){
+    // Roll back: drop the speculative vnode reference and release any
+    // cluster that was pre-allocated (P2 fix).
+    if(vn) vput(vn);
+    if(new) *new = 0;
+    if(c) free_chain(fm,c);
+    return -1;
+  }
   
   if(type==V_DIR){
     // Zero the ENTIRE cluster (all sectors), not just the first one, so that
@@ -859,19 +934,6 @@ static int fcreate(struct vnode *dir, char *nm, short type, struct vnode **new){
     }
     write_fat(fm,c,FAT32_EOC);
   }
-  if(new){
-    *new=fvalloc(fm,c,0,de.DIR_Attr);
-    if(!*new) return -1;
-    // Remember the on-disk directory entry location so size/first-cluster
-    // changes made through this vnode can be written back (B1 fix).
-    // NOTE: dfree() returns the offset of the FIRST free slot, which holds
-    // the first LFN entry when lfn_cnt>0; the short entry (which stores the
-    // file size / first cluster) lives lfn_cnt*32 bytes later.
-    // Flookup's dlookup() already returns the short-entry offset directly.
-    struct fat32_vnode *nfv = (*new)->priv;
-    nfv->pdir_clus = dv->first_clus;
-    nfv->dent_off = off + lfn_cnt * 32;
-  }
   return 0;
 }
 
@@ -888,15 +950,23 @@ static int funlink(struct vnode *dir, char *nm){
     // cluster (512 bytes = 14 entries past "." and ".."), so a non-empty
     // directory whose entries spill into later sectors/clusters was
     // wrongly judged empty and silently deleted (B6 fix).
-    uint start_off = 64;  // first sector of first cluster: skip "." (0) ".." (32)
+    // The corrected scan must skip ONLY the "." (0) and ".." (32) entries of
+    // the FIRST sector of the FIRST cluster.  The previous code's start_off
+    // was reset only after the whole first cluster, so every sector of the
+    // first cluster inherited the 64-byte skip: a sub-directory whose entries
+    // spilled into the second sector of its first cluster had its first two
+    // entries there silently ignored and could be wrongly judged empty and
+    // deleted (P1 fix).
+    uint cl_idx = 0;
     while(c>=2&&c<FAT32_EOC_MIN){
       for(uint s=0;s<fm->sec_per_clus;s++){
-        for(uint b=start_off;b<fm->bps;b+=32){
+        uint skip = (cl_idx==0 && s==0) ? 64 : 0;  // only 1st cluster, 1st sector
+        for(uint b=skip;b<fm->bps;b+=32){
           uchar f; if(sread(fm,clus_to_sec(fm,c)+s,b,&f,1)<0) return -1;
           if(f!=0x00&&f!=0xE5) return -1;
         }
       }
-      start_off = 0;
+      cl_idx++;
       c=read_fat(fm,c);
     }
   }
@@ -973,7 +1043,7 @@ struct mount* fat32_mount(uint dev){
   struct mount *mp=kalloc(); if(!mp){kfree(fm);return 0;}
   mp->ops=&fat32_vfsops;mp->dev=dev;mp->priv=fm;
   fm->vfs_mount = mp;
-  mp->root=fvalloc(fm,fm->root_clus,0,ATTR_DIRECTORY);
+  mp->root=fvalloc(fm,fm->root_clus,0,ATTR_DIRECTORY,0,0);
   if(!mp->root){kfree(fm);kfree(mp);return 0;}
   return mp;
 }
@@ -981,5 +1051,6 @@ struct mount* fat32_mount(uint dev){
 static struct vnode_ops fat32_vnops={
   .lookup=flookup,.read=fread,.write=fwrite,.stat=fstat,.readdir=freaddir,
   .create=fcreate,.unlink=funlink,.mkdir=fmkdir,.truncate=ftrunc,.destroy=fdestroy,
+  .read_kernel=fread_kernel,
 };
 static struct vfs_ops fat32_vfsops={.root=froot,.unmount=fumount};

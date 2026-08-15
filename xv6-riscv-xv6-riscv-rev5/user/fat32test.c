@@ -32,6 +32,236 @@ check(int ok, char *msg)
   }
 }
 
+// ---------------------------------------------------------------------------
+// 并发能力测试（原独立 vfsconcur 程序的功能，并入本文件）：
+//   T1 并发追加  T2 并发创建  T3 挂载点内 exec
+// 断言沿用本文件的 check()/failed。
+// ---------------------------------------------------------------------------
+
+#define CONC_NPROC    6   // 并发追加进程数
+#define CONC_BLK      512
+#define CONC_BLKSPER  40  // 每进程追加块数 (40*512=20KB)
+#define CONC_NDIR     8   // 并发创建目录数
+#define CONC_NFILES   24  // 每目录文件数
+
+static int conc_hasstr(const char *hay, const char *needle){
+  int h = strlen(hay), n = strlen(needle);
+  if(n > h) return 0;
+  for(int i = 0; i <= h - n; i++){
+    int j = 0;
+    while(j < n && hay[i+j] == needle[j]) j++;
+    if(j == n) return 1;
+  }
+  return 0;
+}
+
+static int conc_itostr(char *buf, int v){
+  char tmp[16]; int n = 0;
+  if(v == 0) tmp[n++] = '0';
+  while(v > 0){ tmp[n++] = '0' + v % 10; v /= 10; }
+  for(int i = 0; i < n; i++) buf[i] = tmp[n - 1 - i];
+  buf[n] = 0;
+  return n;
+}
+
+static void conc_mkpath(char *dst, const char *prefix, const char *mid,
+                        int id, const char *name){
+  int i = 0;
+  while(*prefix) dst[i++] = *prefix++;
+  while(*mid)    dst[i++] = *mid++;
+  if(id >= 0){
+    char b[16]; conc_itostr(b, id);
+    for(int j = 0; b[j]; j++) dst[i++] = b[j];
+  }
+  while(*name) dst[i++] = *name++;
+  dst[i] = 0;
+}
+
+// T1: 6 进程 O_APPEND 并发追加同一文件，校验总长与每 512B 块完整性
+static void
+vfsconcur_t1_append(const char *prefix)
+{
+  printf("-- T1: concurrent append (%d procs x %d x %d B)\n",
+         CONC_NPROC, CONC_BLKSPER, CONC_BLK);
+  char path[128];
+  conc_mkpath(path, prefix, "/vfscon_t1", -1, "");
+
+  int fd = open(path, O_WRONLY | O_CREATE | O_TRUNC);
+  check(fd >= 0, "open create t1");
+  if(fd < 0) return;
+  close(fd);
+
+  for(int p = 0; p < CONC_NPROC; p++){
+    int pid = fork();
+    if(pid == 0){
+      int f = open(path, O_WRONLY | O_APPEND);
+      if(f < 0) exit(2);
+      char blk[CONC_BLK];
+      for(int b = 0; b < CONC_BLKSPER; b++){
+        memset(blk, 'A' + p, CONC_BLK);
+        blk[0] = 'P'; blk[1] = '0' + p/10; blk[2] = '0' + p%10; blk[3] = '.';
+        blk[4] = 'B'; blk[5] = '0' + b/1000%10; blk[6] = '0' + b/100%10;
+        blk[7] = '0' + b/10%10; blk[8] = '0' + b%10;
+        if(write(f, blk, CONC_BLK) != CONC_BLK) exit(3);
+      }
+      close(f);
+      exit(0);
+    }
+  }
+  int st;
+  for(int i = 0; i < CONC_NPROC; i++) wait(&st);
+
+  fd = open(path, O_RDONLY);
+  check(fd >= 0, "reopen t1");
+  if(fd < 0) return;
+  int total = CONC_NPROC * CONC_BLKSPER * CONC_BLK;
+  char *data = malloc(total);
+  if(data == 0){ close(fd); check(0, "t1 malloc"); return; }
+  int rd = 0;
+  while(rd < total){
+    int n = read(fd, data + rd, total - rd);
+    if(n <= 0) break;
+    rd += n;
+  }
+  close(fd);
+  if(rd != total){
+    printf("FAIL: size mismatch expected %d got %d\n", total, rd);
+    failed = 1;
+  }
+  int bad = 0;
+  for(int i = 0; i < CONC_NPROC * CONC_BLKSPER; i++){
+    char *b = data + i * CONC_BLK;
+    if(b[0] != 'P' || b[3] != '.' || b[4] != 'B'){ bad++; continue; }
+    int p = (b[1] - '0') * 10 + (b[2] - '0');
+    if(p < 0 || p >= CONC_NPROC){ bad++; continue; }
+    for(int j = 9; j < CONC_BLK; j++)
+      if(b[j] != (char)('A' + p)){ bad++; break; }
+  }
+  check(bad == 0, "all blocks intact (no torn/overwritten)");
+  if(bad) printf("    %d bad blocks\n", bad);
+  free(data);
+  unlink(path);
+}
+
+// T2: 8 进程各建子目录并发创建文件，校验全部存在且内容唯一精确
+static void
+conc_build_expect(char *out, int d, int f)
+{
+  char *q = out;
+  *q++ = 'I'; *q++ = 'D'; *q++ = '='; q += conc_itostr(q, d);
+  *q++ = ' '; *q++ = 'F'; *q++ = '='; q += conc_itostr(q, f);
+  *q = 0;
+}
+
+static void
+vfsconcur_t2_create(const char *prefix)
+{
+  printf("-- T2: concurrent create (%d dirs x %d files)\n",
+         CONC_NDIR, CONC_NFILES);
+  char p[128];
+  conc_mkpath(p, prefix, "/vfscon_t2", -1, "");
+  check(mkdir(p) == 0, "mkdir base t2");
+
+  for(int i = 0; i < CONC_NDIR; i++){
+    int pid = fork();
+    if(pid == 0){
+      char d[128];
+      conc_mkpath(d, p, "/d", i, "");
+      if(mkdir(d) < 0) exit(2);
+      for(int f = 0; f < CONC_NFILES; f++){
+        char fp[128];
+        conc_mkpath(fp, d, "/f", f, "");
+        int fd = open(fp, O_WRONLY | O_CREATE);
+        if(fd < 0) exit(3);
+        char expect[40];
+        conc_build_expect(expect, i, f);
+        int blen = strlen(expect);
+        if(write(fd, expect, blen) != blen) exit(4);
+        close(fd);
+      }
+      exit(0);
+    }
+  }
+  int st;
+  for(int i = 0; i < CONC_NDIR; i++) wait(&st);
+
+  int ok = 1;
+  for(int i = 0; i < CONC_NDIR; i++){
+    char d[128];
+    conc_mkpath(d, p, "/d", i, "");
+    for(int f = 0; f < CONC_NFILES; f++){
+      char fp[128];
+      conc_mkpath(fp, d, "/f", f, "");
+      int fd = open(fp, O_RDONLY);
+      if(fd < 0){
+        printf("FAIL: missing %s\n", fp);
+        ok = 0;
+        continue;
+      }
+      char r[40];
+      int n = read(fd, r, sizeof(r) - 1);
+      close(fd);
+      if(n < 0) n = 0;
+      r[n] = 0;
+      char expect[40];
+      conc_build_expect(expect, i, f);
+      if(strcmp(r, expect) != 0){
+        printf("FAIL: content mismatch %s: '%s' != '%s'\n", fp, r, expect);
+        ok = 0;
+      }
+    }
+  }
+  check(ok, "all files present with exact unique content");
+  if(!ok) failed = 1;
+  unlink(p);
+}
+
+// T3: 把 /echo 复制进挂载点再 exec，断言输出含 hello（验证 read_kernel）
+static void
+vfsconcur_t3_exec(const char *prefix)
+{
+  printf("-- T3: copy /echo -> %s/echo and exec\n", prefix);
+  char dst[128];
+  conc_mkpath(dst, prefix, "/echo", -1, "");
+
+  int s = open("/echo", O_RDONLY);
+  check(s >= 0, "open /echo source");
+  if(s < 0) return;
+  int d = open(dst, O_WRONLY | O_CREATE | O_TRUNC);
+  check(d >= 0, "create dst echo");
+  if(d < 0){ close(s); return; }
+  char buf[512];
+  int n;
+  while((n = read(s, buf, sizeof(buf))) > 0)
+    if(write(d, buf, n) != n){ check(0, "copy write"); break; }
+  close(s); close(d);
+
+  int pp[2];
+  pipe(pp);
+  int pid = fork();
+  if(pid == 0){
+    close(pp[0]);
+    close(1);
+    dup(pp[1]);
+    close(pp[1]);
+    char *argv[] = { dst, "hello", 0 };
+    exec(dst, argv);
+    exit(1);
+  }
+  close(pp[1]);
+  char out[64];
+  int on = 0;
+  while(on < 63 && (n = read(pp[0], out + on, 63 - on)) > 0) on += n;
+  close(pp[0]);
+  int st;
+  wait(&st);
+  out[on] = 0;
+
+  check(conc_hasstr(out, "hello"), "FAT32 exec printed 'hello'");
+  if(!conc_hasstr(out, "hello")) printf("    output='%s'\n", out);
+  unlink(dst);
+}
+
 // ---- directory listing helper --------------------------------------
 struct dlist {
   char name[VDIRSIZ];
@@ -296,6 +526,11 @@ main(void)
   unlink("/fat/trunc.txt");
   unlink("/fat/multi.bin");
   unlink("/fat/FileDataX.txt");
+
+  // ---- 14. 并发能力测试（原 vfsconcur 并入）----
+  vfsconcur_t1_append("/fat");
+  vfsconcur_t2_create("/fat");
+  vfsconcur_t3_exec("/fat");
 
   check(umount("/fat") == 0, "umount /fat");
 
