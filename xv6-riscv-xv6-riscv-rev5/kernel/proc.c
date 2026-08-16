@@ -192,7 +192,11 @@ proc_pagetable(struct proc *p)
   if(pagetable == 0)
     return 0;
 
-  hal_vm_map_trampoline(pagetable, (uint64)trampoline, (uint64)p->trapframe);
+  if(hal_vm_map_trampoline(pagetable, (uint64)trampoline,
+                           (uint64)p->trapframe) < 0){
+    uvmfree(pagetable, 0);
+    return 0;
+  }
 
   return pagetable;
 }
@@ -240,7 +244,13 @@ growproc(int n)
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    uint64 minsz = hal_vm_user_min_size();
+    uint64 shrink = -(long)n;
+    // Preserve xv6's behavior for an over-large negative sbrk: leave the
+    // break unchanged. The platform minimum additionally protects guards.
+    if(sz < minsz || shrink > sz - minsz)
+      return 0;
+    sz = uvmdealloc(p->pagetable, sz, sz - shrink);
   }
   p->sz = sz;
   return 0;

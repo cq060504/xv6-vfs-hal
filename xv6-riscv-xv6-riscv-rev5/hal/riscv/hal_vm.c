@@ -65,3 +65,9 @@ hal_vm_reserve_user_low(pagetable_t pagetable, uint64 *initial_sz)
   *initial_sz = 0;
   return 0;
 }
+
+uint64
+hal_vm_user_min_size(void)
+{
+  return 0;
+}

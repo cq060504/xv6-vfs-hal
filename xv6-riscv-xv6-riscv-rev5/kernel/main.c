@@ -40,6 +40,7 @@ main()
     kvminithart();
     trapinithart();
     hal_irq_hart_init();
+    hal_timer_init();
   }
 
   scheduler();

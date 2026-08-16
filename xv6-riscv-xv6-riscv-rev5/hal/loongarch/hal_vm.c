@@ -95,3 +95,9 @@ fail:
     uvmunmap(pagetable, 0, mapped / PGSIZE, 1);
   return -1;
 }
+
+uint64
+hal_vm_user_min_size(void)
+{
+  return USER_LOW_GUARD_PAGES * PGSIZE;
+}

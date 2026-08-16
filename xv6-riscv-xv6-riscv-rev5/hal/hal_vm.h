@@ -19,6 +19,9 @@ void hal_vm_unmap_trampoline(pagetable_t pagetable);
 //LA avoid illegal access to low memory ---
 int hal_vm_reserve_user_low(pagetable_t pagetable, uint64 *initial_sz);
 
+// Smallest legal process size; preserves any platform low-address guard.
+uint64 hal_vm_user_min_size(void);
+
 
 // Boot-time kernel address-space construction and per-hart activation.
 void hal_vm_map_kernel(pagetable_t kpgtbl);

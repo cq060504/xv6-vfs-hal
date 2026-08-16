@@ -78,7 +78,7 @@ void
 hal_putchar(int c)
 {
   if(panicking == 0)
-    push_off();
+    acquire(&tx_lock);
 
   if(panicked){
     for(;;)
@@ -89,8 +89,10 @@ hal_putchar(int c)
     ;
   WriteReg(THR, c);
 
-  if(panicking == 0)
-    pop_off();
+  if(panicking == 0){
+    tx_busy = 1;
+    release(&tx_lock);
+  }
 }
 
 static int
