@@ -6,7 +6,7 @@ ARCH ?= riscv
 HAL = hal
 # Both platforms expose three block devices: xv6(1) + ext2(2) + fat32(3).
 # LoongArch uses QEMU loader-backed RAM disks instead of virtio hardware.
-VIRTIO_NDISK ?= 3
+HAL_NDISK ?= 3
 
 # Platform-independent kernel objects
 K_OBJS = \
@@ -34,29 +34,24 @@ K_OBJS = \
   $K/ext2.o \
   $K/fat32.o
 
-# Platform-specific objects (compiled from hal/$(ARCH)/)
-ARCH_OBJS = \
+# Objects implemented by both platform directories.
+HAL_COMMON_OBJS = \
   $(HAL)/$(ARCH)/hal_entry.o \
   $(HAL)/$(ARCH)/hal_start.o \
   $(HAL)/$(ARCH)/hal_swtch.o \
   $(HAL)/$(ARCH)/hal_tramp.o \
   $(HAL)/$(ARCH)/hal_kvec.o \
-  $(HAL)/$(ARCH)/hal_plic.o \
   $(HAL)/$(ARCH)/hal_uart.o \
-  $(HAL)/$(ARCH)/hal_vm.o \
+  $(HAL)/$(ARCH)/hal_vm.o
+
+# Controller and disk backends differ between the two platforms.
+ARCH_OBJS = $(HAL_COMMON_OBJS) \
+  $(HAL)/$(ARCH)/hal_plic.o \
   $(HAL)/$(ARCH)/hal_virtio.o
 
-# LoongArch overrides: hal_intr replaces hal_plic, add TLB refill handler
 ifeq ($(ARCH),loongarch)
-ARCH_OBJS = \
-  $(HAL)/$(ARCH)/hal_entry.o \
-  $(HAL)/$(ARCH)/hal_start.o \
-  $(HAL)/$(ARCH)/hal_swtch.o \
-  $(HAL)/$(ARCH)/hal_tramp.o \
-  $(HAL)/$(ARCH)/hal_kvec.o \
+ARCH_OBJS = $(HAL_COMMON_OBJS) \
   $(HAL)/$(ARCH)/hal_intr.o \
-  $(HAL)/$(ARCH)/hal_uart.o \
-  $(HAL)/$(ARCH)/hal_vm.o \
   $(HAL)/$(ARCH)/hal_ramdisk.o \
   $(HAL)/$(ARCH)/hal_tlbrefill.o
 endif
@@ -132,7 +127,7 @@ CFLAGS += -I$K
 CFLAGS += -I$(HAL)
 CFLAGS += -I$(HAL)/$(ARCH)
 CFLAGS += -DARCH_$(ARCH)
-CFLAGS += -DVIRTIO_NDISK=$(VIRTIO_NDISK)
+CFLAGS += -DHAL_NDISK=$(HAL_NDISK)
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
 
 # Disable PIE when possible (for Ubuntu 16.10 toolchain)
@@ -290,11 +285,11 @@ QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nogr
 QEMUOPTS += -global virtio-mmio.force-legacy=false
 QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
-	ifneq ($(filter 2 3,$(VIRTIO_NDISK)),)
+	ifneq ($(filter 2 3,$(HAL_NDISK)),)
 	QEMUOPTS += -drive file=ext2.img,if=none,format=raw,id=x1
 	QEMUOPTS += -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1
 	endif
-	ifeq ($(VIRTIO_NDISK),3)
+	ifeq ($(HAL_NDISK),3)
 	QEMUOPTS += -drive file=fat32.img,if=none,format=raw,id=x2
 	QEMUOPTS += -device virtio-blk-device,drive=x2,bus=virtio-mmio-bus.2
 	endif
@@ -303,7 +298,7 @@ endif
 ifeq ($(ARCH),loongarch)
 QEMU_DEPS = $K/kernel.bin check-loongarch-images
 else
-QEMU_DEPS = $K/kernel fs.img $(if $(filter 2 3,$(VIRTIO_NDISK)),ext2.img) $(if $(filter 3,$(VIRTIO_NDISK)),fat32.img)
+QEMU_DEPS = $K/kernel fs.img $(if $(filter 2 3,$(HAL_NDISK)),ext2.img) $(if $(filter 3,$(HAL_NDISK)),fat32.img)
 endif
 
 .PHONY: check-loongarch-images

@@ -10,15 +10,11 @@
 #include "fs.h"
 #include "buf.h"
 
-#ifndef VIRTIO_NDISK
-#define VIRTIO_NDISK 3
-#endif
-
-#if VIRTIO_NDISK != 3
+#if HAL_NDISK != 3
 #error "LoongArch requires three loader-backed RAM disks"
 #endif
 
-#define NRAMDISK VIRTIO_NDISK
+#define NRAMDISK HAL_NDISK
 
 struct ramdisk {
   uchar *data;

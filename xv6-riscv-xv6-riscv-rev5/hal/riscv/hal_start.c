@@ -9,6 +9,9 @@
 void main();
 void timerinit();
 
+// QEMU virt exposes a 10 MHz timebase. One xv6 tick is 100 ms (10 Hz).
+#define TIMER_TICK_CYCLES 1000000UL
+
 // entry.S needs one stack per CPU.
 __attribute__ ((aligned (16))) char stack0[4096 * NCPU];
 
@@ -64,7 +67,7 @@ timerinit()
   w_mcounteren(r_mcounteren() | 2);
 
   // ask for the very first timer interrupt.
-  w_stimecmp(r_time() + 1000000);
+  w_stimecmp(r_time() + TIMER_TICK_CYCLES);
 }
 
 // ---- HAL unified interface wrapper ----
@@ -76,5 +79,11 @@ timerinit()
 void
 hal_timer_init(void)
 {
-  w_stimecmp(r_time() + 1000000);
+  w_stimecmp(r_time() + TIMER_TICK_CYCLES);
+}
+
+void
+hal_timer_ack(void)
+{
+  w_stimecmp(r_time() + TIMER_TICK_CYCLES);
 }

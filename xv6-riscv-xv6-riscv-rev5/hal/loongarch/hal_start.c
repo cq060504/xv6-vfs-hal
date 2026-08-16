@@ -11,6 +11,9 @@ void main();
 void timerinit();
 void kernelvec();
 
+// QEMU's LoongArch constant timer runs at 100 MHz. xv6 uses 10 Hz ticks.
+#define TIMER_TICK_CYCLES 10000000UL
+
 // Per-CPU boot/scheduler stacks. While a process is running, its CPU's
 // scheduler context is suspended here, so the same page can be reused by the
 // non-returning stack-overflow panic path (see hal_kvec.S).
@@ -68,14 +71,15 @@ void timerinit()
   // Clear any pending timer interrupt
   w_ticlr(1);
 
-  // Configure timer in periodic mode (~10ms between interrupts).
+  // Configure the per-core timer in periodic 100 ms mode (10 Hz).
   // TCFG format: [0]=EN, [1]=PERIODIC, [31:2]=INIT_VAL.
-  // At ~1GHz clock, 10000000 counts ≈ 10ms.
-  uint64 interval = 10000000;
-  w_tcfg((interval << TCFG_INITVAL_SHIFT) | TCFG_PERIOD | TCFG_EN);
+  w_tcfg((TIMER_TICK_CYCLES << TCFG_INITVAL_SHIFT) |
+         TCFG_PERIOD | TCFG_EN);
 }
 
 void hal_timer_init(void) { timerinit(); }
+
+void hal_timer_ack(void) { w_ticlr(1); }
 
 // Called from kernelvec (hal_kvec.S) when a kernel stack overflow is detected.
 // sp  = value of sp register at the time of the guard fault.

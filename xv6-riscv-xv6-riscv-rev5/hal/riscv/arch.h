@@ -327,8 +327,6 @@ static inline uint64 hal_read_stval(void)     { return r_stval(); }
 static inline void   hal_write_stvec(uint64 x) { w_stvec(x); }
 static inline uint64 hal_read_satp(void)      { return r_satp(); }
 static inline void   hal_write_satp(uint64 x) { w_satp(x); }
-static inline uint64 hal_get_time(void)       { return r_time(); }
-static inline void   hal_set_timer(uint64 next) { w_stimecmp(next); }
 static inline void   hal_tlb_flush_all(void)  { sfence_vma(); }
 static inline void   hal_intr_on(void)        { intr_on(); }
 static inline void   hal_intr_off(void)       { intr_off(); }

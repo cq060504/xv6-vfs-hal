@@ -61,6 +61,49 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
+// The two trampoline implementations consume this layout directly.
+#define TRAPFRAME_OFFSET(member, offset) \
+  _Static_assert(__builtin_offsetof(struct trapframe, member) == (offset), \
+                 "trapframe." #member " offset changed")
+TRAPFRAME_OFFSET(kernel_satp, 0);
+TRAPFRAME_OFFSET(kernel_sp, 8);
+TRAPFRAME_OFFSET(kernel_trap, 16);
+TRAPFRAME_OFFSET(epc, 24);
+TRAPFRAME_OFFSET(kernel_hartid, 32);
+TRAPFRAME_OFFSET(ra, 40);
+TRAPFRAME_OFFSET(sp, 48);
+TRAPFRAME_OFFSET(gp, 56);
+TRAPFRAME_OFFSET(tp, 64);
+TRAPFRAME_OFFSET(t0, 72);
+TRAPFRAME_OFFSET(t1, 80);
+TRAPFRAME_OFFSET(t2, 88);
+TRAPFRAME_OFFSET(s0, 96);
+TRAPFRAME_OFFSET(s1, 104);
+TRAPFRAME_OFFSET(a0, 112);
+TRAPFRAME_OFFSET(a1, 120);
+TRAPFRAME_OFFSET(a2, 128);
+TRAPFRAME_OFFSET(a3, 136);
+TRAPFRAME_OFFSET(a4, 144);
+TRAPFRAME_OFFSET(a5, 152);
+TRAPFRAME_OFFSET(a6, 160);
+TRAPFRAME_OFFSET(a7, 168);
+TRAPFRAME_OFFSET(s2, 176);
+TRAPFRAME_OFFSET(s3, 184);
+TRAPFRAME_OFFSET(s4, 192);
+TRAPFRAME_OFFSET(s5, 200);
+TRAPFRAME_OFFSET(s6, 208);
+TRAPFRAME_OFFSET(s7, 216);
+TRAPFRAME_OFFSET(s8, 224);
+TRAPFRAME_OFFSET(s9, 232);
+TRAPFRAME_OFFSET(s10, 240);
+TRAPFRAME_OFFSET(s11, 248);
+TRAPFRAME_OFFSET(t3, 256);
+TRAPFRAME_OFFSET(t4, 264);
+TRAPFRAME_OFFSET(t5, 272);
+TRAPFRAME_OFFSET(t6, 280);
+_Static_assert(sizeof(struct trapframe) == 288, "trapframe size changed");
+#undef TRAPFRAME_OFFSET
+
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state

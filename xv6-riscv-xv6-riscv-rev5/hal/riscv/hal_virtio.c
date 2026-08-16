@@ -15,22 +15,14 @@
 #include "buf.h"
 #include "virtio.h"
 
-#ifndef VIRTIO_NDISK
-#define VIRTIO_NDISK 1
-#endif
-
-#if VIRTIO_NDISK < 1 || VIRTIO_NDISK > 3
-#error "VIRTIO_NDISK must be 1-3"
-#endif
-
-#define NVIRTIO VIRTIO_NDISK
+#define NVIRTIO HAL_NDISK
 
 static uint64 virtio_base[NVIRTIO] = {
   VIRTIO0,
-#if VIRTIO_NDISK > 1
+#if HAL_NDISK > 1
   VIRTIO1,
 #endif
-#if VIRTIO_NDISK > 2
+#if HAL_NDISK > 2
   VIRTIO2,
 #endif
 };

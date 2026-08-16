@@ -11,6 +11,7 @@
 # and calls hal_stack_overflow_panic(), which does not return.
 
 #include "arch.h"
+#include "memlayout.h"
 
 .globl kerneltrap
 .globl kernelvec
@@ -35,12 +36,10 @@ kernelvec:
 .Lchk_badv:
         # ---- Phase 2: check if BADV falls in kernel-stack region ----
         # Valid kernel stacks: [KSTACK_REGION_BOTTOM, KSTACK_TOP)
-        #   KSTACK_REGION_BOTTOM = 0xFFFFFFFFFFF3F000
-        #   KSTACK_TOP          = 0xFFFFFFFFFFFFF000
         csrrd   $t0, CSR_BADV          # $t0 = BADV
-        lu12i.w $t1, -193              # $t1 = KSTACK_REGION_BOTTOM
+        li.d    $t1, KSTACK_REGION_BOTTOM
         bltu    $t0, $t1, .Lnormal     # BADV < bottom → not a guard fault
-        lu12i.w $t1, -1               # $t1 = KSTACK_TOP
+        li.d    $t1, KSTACK_TOP
         bgeu    $t0, $t1, .Lnormal     # BADV >= top → not a guard fault
 
         # ---- Stack overflow confirmed! ----

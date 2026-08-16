@@ -17,7 +17,9 @@ SECTIONS
   /* TLB refill and trampoline live at fixed pages used by memlayout.h. */
   . = 0x1c008000;
   .tlbrefill : {
+    _tlbrefill = .;
     *(.tlbrefill)
+    ASSERT(. - _tlbrefill <= 0x1000, "error: TLB refill handler larger than one page");
   }
 
   . = 0x1c009000;

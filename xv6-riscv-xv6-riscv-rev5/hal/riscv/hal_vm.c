@@ -12,10 +12,10 @@ hal_vm_map_kernel(pagetable_t kpgtbl)
   kvmmap(kpgtbl, PLIC, PLIC, 0x4000000, PTE_R | PTE_W);
 
   kvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
-#if defined(VIRTIO1) && VIRTIO_NDISK > 1
+#if defined(VIRTIO1) && HAL_NDISK > 1
   kvmmap(kpgtbl, VIRTIO1, VIRTIO1, PGSIZE, PTE_R | PTE_W);
 #endif
-#if defined(VIRTIO2) && VIRTIO_NDISK > 2
+#if defined(VIRTIO2) && HAL_NDISK > 2
   kvmmap(kpgtbl, VIRTIO2, VIRTIO2, PGSIZE, PTE_R | PTE_W);
 #endif
 

@@ -9,6 +9,7 @@
 #   Kernel: KSTACK_REGION_BOTTOM <= VA < KSTACK_TOP  (high half, via PGDH)
 
 #include "arch.h"
+#include "memlayout.h"
 
 .section .tlbrefill, "ax"
 .balign 4096
@@ -32,21 +33,19 @@ tlb_refill_entry:
         blt     $t0, $r0, .Lchk_kern
 
         # User address: must be in [2*PGSIZE, MAXVA).
-        srli.d  $t0, $t0, 13           # reject VA < 2*PGSIZE
+        srli.d  $t0, $t0, USER_LOW_GUARD_SHIFT
         beqz    $t0, .Ltlbr_invalid
         csrrd   $t0, CSR_TLBRBADV
-        srli.d  $t0, $t0, 38           # reject VA >= MAXVA
+        srli.d  $t0, $t0, HAL_VA_BITS  # reject VA >= MAXVA
         bnez    $t0, .Ltlbr_invalid
         b       .Lrefill_ok
 
 .Lchk_kern:
         # Kernel address: must be in [KSTACK_REGION_BOTTOM, KSTACK_TOP).
-        # KSTACK_REGION_BOTTOM = 0xFFFFFFFFFFF3F000
-        # KSTACK_TOP          = 0xFFFFFFFFFFFFF000
         csrwr   $t1, CSR_KSAVE2       # KSave2 = old $t1
-        lu12i.w $t1, -193              # t1 = KSTACK_REGION_BOTTOM
+        li.d    $t1, KSTACK_REGION_BOTTOM
         bltu    $t0, $t1, .Ltlbr_kern_bad
-        lu12i.w $t1, -1               # t1 = KSTACK_TOP
+        li.d    $t1, KSTACK_TOP
         bgeu    $t0, $t1, .Ltlbr_kern_bad
         csrrd   $t1, CSR_KSAVE2       # restore $t1
         # fall through to page-table walk

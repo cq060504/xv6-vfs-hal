@@ -94,7 +94,7 @@ bread(uint dev, uint blockno)
 {
   struct buf *b;
 
-  if(dev < 1 || dev > VIRTIO_NDISK)
+  if(dev < 1 || dev > HAL_NDISK)
     return 0;
 
   b = bget(dev, blockno);
@@ -152,5 +152,4 @@ bunpin(struct buf *b) {
   b->refcnt--;
   release(&bcache.lock);
 }
-
 

@@ -25,7 +25,7 @@ trapinit(void)
 void
 trapinithart(void)
 {
-  w_stvec((uint64)kernelvec);
+  hal_write_stvec((uint64)kernelvec);
 }
 
 //
@@ -38,12 +38,12 @@ usertrap(void)
 {
   int which_dev = 0;
 
-  if((r_sstatus() & SSTATUS_SPP) != 0)
+  if((hal_read_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
 
   // send interrupts and exceptions to kerneltrap(),
   // since we're now in the kernel.
-  w_stvec((uint64)kernelvec);  //DOC: kernelvec
+  hal_write_stvec((uint64)kernelvec);  //DOC: kernelvec
 
   struct proc *p = myproc();
   
@@ -177,10 +177,8 @@ clockintr()
     release(&tickslock);
   }
 
-  // ask for the next timer interrupt. this also clears
-  // the interrupt request. 1000000 is about a tenth
-  // of a second.
-  hal_set_timer(hal_get_time() + 1000000);
+  // Clear this interrupt and arrange the next 10 Hz platform tick.
+  hal_timer_ack();
 }
 
 // check if it's an external interrupt or software interrupt,
@@ -202,10 +200,10 @@ devintr()
     if(irq == UART0_IRQ){
       hal_console_intr(consoleintr);
     } else if(irq == VIRTIO0_IRQ
-#if defined(VIRTIO1_IRQ) && VIRTIO_NDISK > 1
+#if defined(VIRTIO1_IRQ) && HAL_NDISK > 1
               || irq == VIRTIO1_IRQ
 #endif
-#if defined(VIRTIO2_IRQ) && VIRTIO_NDISK > 2
+#if defined(VIRTIO2_IRQ) && HAL_NDISK > 2
               || irq == VIRTIO2_IRQ
 #endif
     ){

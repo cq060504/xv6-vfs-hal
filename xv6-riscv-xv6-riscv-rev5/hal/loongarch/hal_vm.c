@@ -2,14 +2,11 @@
 #include "hal/hal.h"
 #include "defs.h"
 
-#define USER_LOW_GUARD_PAGES 2
-
-// NPROC=64 → 64*3=192 pages.  KSTACK_REGION_BOTTOM must be exactly
-// KSTACK_TOP - (NPROC * 3) * PGSIZE.  If NPROC changes without updating
-// memlayout.h, the stack region will be wrong and the refill handler
-// will reject valid kernel stack VAs or accept invalid ones.
-_Static_assert(KSTACK_TOP - KSTACK_REGION_BOTTOM == 192 * 4096,
-               "KSTACK_REGION_BOTTOM not aligned with NPROC — check memlayout.h");
+_Static_assert(KSTACK_TOP % PGSIZE == 0, "KSTACK_TOP must be page aligned");
+_Static_assert(KSTACK_TOP - KSTACK_REGION_BOTTOM == NPROC * 3 * PGSIZE,
+               "kernel stack window must contain every process stack and guard");
+_Static_assert(USER_LOW_GUARD_PAGES == (1 << (USER_LOW_GUARD_SHIFT - PGSHIFT)),
+               "low guard shift must match the reserved page count");
 
 extern void tlb_refill_entry(void);
 

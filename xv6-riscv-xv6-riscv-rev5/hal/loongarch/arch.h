@@ -48,6 +48,11 @@
 #define CSR_DMW0      0x180  // Direct Mapping Window 0
 #define CSR_DMW1      0x181  // Direct Mapping Window 1
 
+// Constants shared by C and platform assembly.
+#define PGSIZE 4096
+#define PGSHIFT 12
+#define HAL_VA_BITS 38
+
 #ifndef __ASSEMBLER__
 
 // ============================================================
@@ -446,9 +451,6 @@ hal_pte_is_leaf(pte_t pte)
 // ============================================================
 //  Page table walk macros (same algorithm as RISC-V Sv39)
 // ============================================================
-#define PGSIZE 4096
-#define PGSHIFT 12
-
 #define PGROUNDUP(sz)  (((sz)+PGSIZE-1) & ~(PGSIZE-1))
 #define PGROUNDDOWN(a) (((a)) & ~(PGSIZE-1))
 
@@ -460,7 +462,7 @@ hal_pte_is_leaf(pte_t pte)
 
 // Keep the xv6 user address contract close to RISC-V Sv39. LoongArch hardware
 // still supports a wider VA, but the TLB refill path rejects VAs >= MAXVA.
-#define MAXVA (1ULL << 38)
+#define MAXVA (1ULL << HAL_VA_BITS)
 
 // PGDL/PGDH both hold the physical page table base (no mode bits).
 // Unlike RISC-V satp, LoongArch page-table CSRs are pure PA pointers.
@@ -528,19 +530,6 @@ static inline void   hal_write_stvec(uint64 x)   { w_eentry(x); }
 // --- Page table base ---
 static inline uint64 hal_read_satp(void)        { return r_pgdl(); }
 static inline void   hal_write_satp(uint64 x)    { w_pgdl(x); }
-
-// --- Timer ---
-// LoongArch Stable Counter (rdtime.d) provides a monotonically increasing
-// 64-bit counter.  TVAL/TICLR handle the periodic timer interrupt.
-static inline uint64 r_stable_counter(void) {
-  uint64 x;
-  asm volatile("rdtime.d %0, $r0" : "=r"(x));
-  return x;
-}
-static inline uint64 hal_get_time(void)         { return r_stable_counter(); }
-// LA uses a periodic timer (TCFG_PERIOD); hal_set_timer only clears the
-// current interrupt to re-arm. The 'next' parameter is ignored.
-static inline void   hal_set_timer(uint64 next)  { (void)next; w_ticlr(1); }
 
 // --- TLB ---
 static inline void   hal_tlb_flush_all(void)    { sfence_vma(); }

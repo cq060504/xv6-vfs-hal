@@ -20,6 +20,8 @@
 #ifndef _HAL_LOONGARCH_MEMLAYOUT_H_
 #define _HAL_LOONGARCH_MEMLAYOUT_H_
 
+#include "param.h"
+
 // QEMU puts 16550a UART registers here in physical memory.
 // UART0_IRQ: serial irq goes to PCH-PIC input 2 (VIRT_UART_IRQ(66)-VIRT_GSI_BASE(64)),
 // but PCH-PIC htmsi_vector[] resets to all zeros, so every input is routed to
@@ -63,9 +65,13 @@
 // RISC-V uses TRAPFRAME as this guard; keep the same contract for tests.
 #define USER_TOP TRAPFRAME
 
+// Reserve two supervisor-only low pages in every LoongArch user page table.
+#define USER_LOW_GUARD_PAGES 2
+#define USER_LOW_GUARD_SHIFT (PGSHIFT + 1)
+
 
 // Kernel stacks: descending from high VA, outside DMW0.
-// 3*PGSIZE per process (2 mapped + 1 unmapped guard). NPROC=64.
+// 3*PGSIZE per process (2 mapped + 1 unmapped guard).
 //
 // Layout for process p (top→bottom):
 //   KSTACK(p) + 2*PGSIZE  ← initial sp (stack grows downward)
@@ -73,14 +79,13 @@
 //   KSTACK(p)             ← first usable page (mapped, PTE_R|PTE_W)
 //   KSTACK(p) - 1*PGSIZE  ← guard page (NO PTE → PIL/PIS on overflow)
 //
-// Constraints verified for NPROC=64, PGSIZE=4096:
+// Constraints:
 //   KSTACK(p) % PGSIZE == 0  (page-aligned)
 //   KSTACK(p) + 2*PGSIZE <= KSTACK_TOP  (fits in window)
 //   KSTACK(NPROC-1) - PGSIZE >= KSTACK_REGION_BOTTOM  (last guard in range)
-#define KSTACK_TOP            0xFFFFFFFFFFFFF000ULL
-#define KSTACK(p)             (KSTACK_TOP - ((uint64)(p) * 3 + 2) * PGSIZE)
-// NPROC = 64 → region spans 64 * 3 = 192 pages (128 mapped + 64 guard)
-#define KSTACK_REGION_BOTTOM  (KSTACK_TOP - 192 * PGSIZE)
+#define KSTACK_TOP            0xFFFFFFFFFFFFF000
+#define KSTACK(p)             (KSTACK_TOP - (((p) * 3 + 2) * PGSIZE))
+#define KSTACK_REGION_BOTTOM  (KSTACK_TOP - NPROC * 3 * PGSIZE)
 
 #ifndef __ASSEMBLER__
 // --- Page table walk address validation ---

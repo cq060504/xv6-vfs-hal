@@ -15,8 +15,8 @@
 #include "hal_vm.h"
 #include "hal_intr.h"
 #include "hal_timer.h"
-#include "hal_memlayout.h"
 #include "hal_console.h"
+#include "hal_disk.h"
 #include "hal_ctx.h"
 
 #endif

@@ -87,11 +87,11 @@ holding(struct spinlock *lk)
 void
 push_off(void)
 {
-  int old = intr_get();
+  int old = hal_intr_get();
 
   // disable interrupts to prevent an involuntary context
   // switch while using mycpu().
-  intr_off();
+  hal_intr_off();
 
   if(mycpu()->noff == 0)
     mycpu()->intena = old;
@@ -102,11 +102,11 @@ void
 pop_off(void)
 {
   struct cpu *c = mycpu();
-  if(intr_get())
+  if(hal_intr_get())
     panic("pop_off - interruptible");
   if(c->noff < 1)
     panic("pop_off");
   c->noff -= 1;
   if(c->noff == 0 && c->intena)
-    intr_on();
+    hal_intr_on();
 }
