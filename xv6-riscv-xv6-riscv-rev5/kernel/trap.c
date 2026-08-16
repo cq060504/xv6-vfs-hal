@@ -181,15 +181,6 @@ clockintr()
   // the interrupt request. 1000000 is about a tenth
   // of a second.
   hal_set_timer(hal_get_time() + 1000000);
-
-
-  // QEMU 8.2.2 does not deliver UART interrupts to the CPU
-  // (verified: 16550 IIR pending, PCH-PIC asserts, but EIOINTC
-  // COREISR never latches; removing this poll makes keyboard
-  // input dead — verified empirically).  Poll the UART on each
-  // timer tick so keyboard input works.
-  hal_console_poll(consoleintr);
-
 }
 
 // check if it's an external interrupt or software interrupt,
@@ -203,7 +194,7 @@ devintr()
   uint64 scause = hal_read_scause();
 
   if(scause == 0x8000000000000009L){
-    // this is a supervisor external interrupt, via PLIC.
+    // This is the HAL's supervisor-compatible external interrupt cause.
 
     // irq indicates which device interrupted.
     int irq = hal_irq_claim();
@@ -219,14 +210,12 @@ devintr()
 #endif
     ){
       hal_disk_intr();
-    } else if(irq){
+    } else if(irq >= 0){
       printf("unexpected interrupt irq=%d\n", irq);
     }
 
-    // the PLIC allows each device to raise at most one
-    // interrupt at a time; tell the PLIC the device is
-    // now allowed to interrupt again.
-    if(irq)
+    // Finish the platform interrupt-controller protocol after the handler.
+    if(irq >= 0)
       hal_irq_complete(irq);
 
     return 1;

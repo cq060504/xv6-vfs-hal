@@ -69,13 +69,14 @@
 //  ECFG bit definitions
 // ============================================================
 #define ECFG_LIE_TIMER (1L << 11)  // local timer interrupt enable
-#define ECFG_LIE_HWI   (1L << 12)  // local hardware interrupt enable (EIOINTC)
+// QEMU virt connects EIOINTC pin 0 to the CPU's HWI0 input (IS[2]).
+#define ECFG_LIE_HWI   (1L << 2)
 
 // ============================================================
 //  ESTAT bit definitions
 // ============================================================
 #define ESTAT_IS_TIMER  (1L << 11)  // timer interrupt pending
-#define ESTAT_IS_HWI    (1L << 12)  // external hardware interrupt pending
+#define ESTAT_IS_HWI    (1L << 2)   // EIOINTC pin 0 pending
 #define ESTAT_ECODE_SHIFT 16
 #define ESTAT_ECODE_MASK  (0x3FULL << ESTAT_ECODE_SHIFT)
 #define ESTAT_ESUBCODE_SHIFT 22
@@ -153,6 +154,16 @@ static inline uint64 r_estat(void) {
   uint64 x;
   asm volatile("csrrd %0, 0x5" : "=r"(x));
   return x;
+}
+
+// --- IOCSR access (for per-CPU EIOINTC registers) ---
+static inline uint32 iocsr_read_w(uint64 addr) {
+  uint32 value;
+  asm volatile("iocsrrd.w %0, %1" : "=r"(value) : "r"(addr));
+  return value;
+}
+static inline void iocsr_write_w(uint32 value, uint64 addr) {
+  asm volatile("iocsrwr.w %0, %1" : : "r"(value), "r"(addr) : "memory");
 }
 
 // --- ERA (0x6): Exception Return Address (= sepc) ---

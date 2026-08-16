@@ -49,7 +49,7 @@ hal_irq_claim(void)
 {
   int hart = cpuid();
   int irq = *(uint32*)PLIC_SCLAIM(hart);
-  return irq;
+  return irq == 0 ? -1 : irq;
 }
 
 // tell the PLIC we've served this IRQ.

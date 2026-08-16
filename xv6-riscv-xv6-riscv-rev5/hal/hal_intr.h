@@ -8,7 +8,7 @@
 // ---- Platform-level interrupt controller ----
 void hal_irq_init(void);          // initialise controller
 void hal_irq_hart_init(void);     // per-hart initialisation
-int  hal_irq_claim(void);         // claim pending IRQ
+int  hal_irq_claim(void);         // claim pending IRQ; -1 means none
 void hal_irq_complete(int);       // mark IRQ complete
 
 #endif

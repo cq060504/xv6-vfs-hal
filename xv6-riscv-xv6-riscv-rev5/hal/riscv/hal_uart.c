@@ -64,10 +64,10 @@ hal_console_init(void)
   // reset and enable FIFOs.
   WriteReg(FCR, FCR_FIFO_ENABLE | FCR_FIFO_CLEAR);
 
+  initlock(&tx_lock, "uart");
+
   // enable transmit and receive interrupts.
   WriteReg(IER, IER_TX_ENABLE | IER_RX_ENABLE);
-
-  initlock(&tx_lock, "uart");
 }
 
 // transmit buf[] to the uart. it blocks if the
@@ -155,11 +155,4 @@ hal_console_intr(void (*handler)(int))
       break;
     handler(c);
   }
-}
-
-//riscv use PLIC RX interrupt
-void
-hal_console_poll(void (*handler)(int))
-{
-  (void)handler;
 }

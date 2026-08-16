@@ -3,13 +3,13 @@
 // Based on QEMU hw/loongarch/virt.c:
 //
 // 00000000 -- Low RAM (256 MB for xv6)
-// 0FE00000 -- EIOINTC (extended I/O interrupt controller)
 // 1FE001E0 -- UART0 (COM1, 16550a)
 // 1C000000 -- Firmware/BIOS flash (kernel loaded here via -bios)
+// IOCSR 1400--1CFF -- EIOINTC (extended I/O interrupt controller)
 //
 // DMW0 (VSEG=0, PLV=PLV0) identity-maps VA[63:60]=0 -> PA=VA for kernel
 // direct access to: .data/.bss (0x00400000), .text/flash (0x1c000000),
-// UART, EIOINTC, and the trampoline page.
+// UART and the trampoline page. EIOINTC is accessed through IOCSR instructions.
 //
 // Kernel stacks live at high VA (VA[63]=1) outside DMW0, accessed through
 // PGDH page table. This enables real guard pages: a stack overflow moves sp
@@ -30,8 +30,8 @@
 // virtio on LoongArch is PCI-based, not MMIO.
 #define VIRTIO0_IRQ 32
 
-// Extended I/O Interrupt Controller base address.
-#define EIOINTC 0x0FE00000L
+// EIOINTC lives in the IOCSR address space, not the normal MMIO space.
+#define EIOINTC_IOCSR_BASE 0x1400L
 
 // Kernel code in flash at VMA 0x1c000000. Kernel data in RAM at 0x00400000.
 // PHYSTOP = start of kernel data in RAM + 124MB usable RAM.
