@@ -51,9 +51,6 @@ kexec(char *path, char **argv)
   if((pagetable = proc_pagetable(p)) == 0)
     goto bad;
 
-  if(hal_vm_reserve_user_low(pagetable, &sz) < 0)
-    goto bad;
-
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
     if(vfs_read_kernel(vp, (uint64)&ph, sizeof(ph), off) != sizeof(ph))

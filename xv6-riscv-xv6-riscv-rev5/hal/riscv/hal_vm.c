@@ -57,17 +57,3 @@ hal_vm_unmap_trampoline(pagetable_t pagetable)
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
 }
-
-int
-hal_vm_reserve_user_low(pagetable_t pagetable, uint64 *initial_sz)
-{
-  (void)pagetable;
-  *initial_sz = 0;
-  return 0;
-}
-
-uint64
-hal_vm_user_min_size(void)
-{
-  return 0;
-}

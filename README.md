@@ -19,7 +19,7 @@
 | 文件系统           | xv6fs                         | xv6fs + ext2 + FAT32                  |
 | CPU架构            | RISC-V                        | RISC-V + LoongArch                    |
 | VFS                | 无                            | 669行核心实现，3个文件系统后端        |
-| HAL                | RISC-V平台代码位于`kernel/` | 8个公共头文件 + 2套平台实现，共3551行 |
+| HAL                | RISC-V平台代码位于`kernel/` | 8个公共头文件 + 2套平台实现，共3485行 |
 | 通用内核架构条件块 | RISC-V专用                    | `kernel/`中为0                      |
 
 ---
@@ -30,8 +30,8 @@
 - **ext2文件系统实现** — 1156行，覆盖文件、目录、设备节点、读写、删除、硬链接、时间戳和单间接块
 - **xv6fs胶水层** — 497行，将原生inode包装为vnode；`kernel/fs.c`和`kernel/log.c`保持原实现
 - **FAT32文件系统** — 1076行，支持8.3短名、VFAT LFN、簇链读写、O_APPEND和O_TRUNC，双架构运行
-- **HAL硬件抽象层** — 241行，公共接口覆盖启动、页表、中断、定时器、串口、上下文切换和块设备；RISC-V与LoongArch分别实现
-- **LoongArch稳定性机制** — 软件TLB重填、NR/NX权限转换、高地址PGDH内核栈guard、UART定时轮询后备
+- **HAL硬件抽象层** — 234行，公共接口覆盖启动、页表、中断、定时器、串口、上下文切换和块设备；RISC-V与LoongArch分别实现
+- **LoongArch稳定性机制** — 软件TLB重填、NR/NX权限转换、高地址PGDH内核栈guard、EIOINTC/IOCSR中断驱动UART
 - **三块独立设备** — dev=1/2/3分别承载xv6fs、ext2和FAT32；RISC-V使用virtio-mmio，LoongArch使用loader-backed RAM disk
 - **测试结果** — 双架构`usertests -q`通过，ext2综合测试15/15通过，FAT32测试42/42通过
 - **Docker开发环境** — RISC-V 和 LoongArch 两个隔离容器，统一挂载源码目录
@@ -185,10 +185,10 @@ OBJS = $(K_OBJS) $(ARCH_OBJS)
 | 公共接口          | 功能                                                      | 主要调用位置                            |
 | ----------------- | --------------------------------------------------------- | --------------------------------------- |
 | `hal_arch.h`    | hart ID、中断总开关、异常状态、异常向量、页表根、CPU idle | `proc.c`、`trap.c`                  |
-| `hal_vm.h`      | 固定映射、MMU使能、TLB、叶PTE、用户特殊映射和低地址保护   | `vm.c`、`proc.c`、`exec.c`        |
+| `hal_vm.h`      | 固定映射、MMU使能、TLB、叶PTE和用户特殊映射   | `vm.c`、`proc.c`        |
 | `hal_intr.h`    | 中断控制器初始化、claim和complete                         | `main.c`、`trap.c`                  |
 | `hal_timer.h`   | 读取时间、设置/确认定时器                                 | `main.c`、`trap.c`                  |
-| `hal_console.h` | UART初始化、批量输出、同步输出、中断/轮询接收             | `console.c`、`printf.c`、`trap.c` |
+| `hal_console.h` | UART初始化、批量输出、同步输出和RX/TX中断处理             | `console.c`、`printf.c`、`trap.c` |
 | `hal_ctx.h`     | 平台ABI上下文和`hal_switch()`                           | `proc.c`                              |
 | `hal_disk_*`    | 块设备初始化、读写和中断完成                              | `main.c`、`bio.c`、`trap.c`       |
 
@@ -203,7 +203,7 @@ consoleinit() → kinit() → kvminit() → hal_vm_map_kernel()
   → hal_disk_init() → hal_timer_init() → userinit() → scheduler()
 ```
 
-原有10个LoongArch条件块收敛为7组平台职责：用户低地址预留、用户trapframe绑定、UART轮询、trampoline映射/解除、内核地址空间建立/使能和叶PTE判定。
+原有LoongArch条件块已收敛为trapframe绑定、trampoline映射/解除、内核地址空间建立/使能和叶PTE判定等HAL职责。用户低两页机制经规范复核和双架构回归后删除，UART则统一为RX/TX中断路径。
 
 ### RISC-V平台适配
 
@@ -231,19 +231,19 @@ bread(dev, blockno) → hal_disk_rw()
 
 ### LoongArch平台适配
 
-LoongArch实现位于`hal/loongarch/`，共14个文件、1673行，面向QEMU 8.2.2 `virt`机器和`la464` CPU。
+LoongArch实现位于`hal/loongarch/`，共14个文件、1643行，面向QEMU 8.2.2 `virt`机器和`la464` CPU。
 
 | 子系统       | 实现                                                                                                              |
 | ------------ | ----------------------------------------------------------------------------------------------------------------- |
 | 启动和链接   | `-bios`装载`0x1c000000`固件；CPU 0复制`.data`到`0x00400000`并清零`.bss`；其他CPU等待`BOOT_DONE_MAGIC` |
 | 地址转换     | 低地址PLV0对象通过DMW0恒等映射，用户低地址通过PGDL，高地址内核栈通过固定PGDH                                      |
-| 页表         | 四级`9-9-9-9-12`；用户`MAXVA=1<<38`；`user.ld`从`0x2000`链接，低两页映射为PLV0保护页                      |
+| 页表         | 四级`9-9-9-9-12`；用户`MAXVA=1<<38`；与RISC-V一样从VA 0链接；`RVACFG`、refill和C路径共同检查上界 |
 | PTE权限      | 公共R/X请求由`hal_pte_encode_perm()`转换为LA64 NR/NX原生位；P位用于叶PTE判定                                    |
 | TLB          | `hal_tlbrefill.S`使用`lddir/ldpte/tlbfill`完成软件遍历；无效PTE填入V=0条目并转入PIL/PIS/PIF                   |
 | 用户trap     | KSave0保存用户`a0`，KSave1保存trapframe内核地址；PGDL在用户和内核页表之间切换；`ertn`返回PLV3                 |
 | 内核栈       | 每进程两页有效栈加一页无PTE guard；高地址栈由PGDH映射；guard异常先切换到每CPU紧急栈                               |
 | 中断和定时器 | PCH-PIC连接EIOINTC；定时器使用周期TCFG和TICLR，不经过外部中断控制器                                               |
-| UART         | TX轮询LSR bit 5；当前QEMU版本的RX外部IRQ未到达CPU，使用约10ms定时轮询后备                                         |
+| UART         | 16550开启RX/TX中断；PCH-PIC解险后经EIOINTC IOCSR路由到ESTAT.IS[2]；发送路径使用跨CPU锁                                         |
 | 磁盘         | QEMU loader把三幅镜像放入`0x09000000/0x0a000000/0x0b000000`；`hal_ramdisk.c`执行同步BSIZE复制                 |
 
 LoongArch的三设备布局为：
@@ -299,7 +299,7 @@ xv6-vfs-hal/
 │   ├── hal/                               ← 硬件抽象层
 │   │   ├── hal.h / hal_*.h                ← 公共接口（8个头文件，200行）
 │   │   ├── riscv/                         ← RISC-V平台实现（12个文件，1526行）
-│   │   └── loongarch/                     ← LoongArch平台实现（14个文件，1673行）
+│   │   └── loongarch/                     ← LoongArch平台实现（14个文件，1643行）
 │   ├── user/                              ← 用户态程序
 │   │   ├── ext2test.c                     ← ext2综合测试（15项）
 │   │   ├── fat32test.c                    ← FAT32测试（42项）
@@ -320,9 +320,9 @@ xv6-vfs-hal/
 | ext2实现      | `kernel/ext2.c` + `kernel/ext2.h`                     | 1156行   |
 | xv6fs胶水     | `kernel/xv6fs.c`                                        | 497行    |
 | FAT32         | `kernel/fat32.c` + `kernel/fat32.h`                   | 1076行   |
-| HAL公共接口   | `hal/hal.h` + `hal/hal_*.h`                           | 241行    |
-| RISC-V HAL    | `hal/riscv/`                                            | 1622行   |
-| LoongArch HAL | `hal/loongarch/`                                        | 1688行   |
+| HAL公共接口   | `hal/hal.h` + `hal/hal_*.h`                           | 234行    |
+| RISC-V HAL    | `hal/riscv/`                                            | 1608行   |
+| LoongArch HAL | `hal/loongarch/`                                        | 1643行   |
 | 用户测试      | `ext2test.c`、`fat32test.c`、`test1.c`、`test2.c` | 1072行   |
 
 以上数据为当前文件规模。HAL统计包含从原xv6迁移的RISC-V平台代码，因此未作为净新增行数使用。

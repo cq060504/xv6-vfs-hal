@@ -65,11 +65,6 @@
 // RISC-V uses TRAPFRAME as this guard; keep the same contract for tests.
 #define USER_TOP TRAPFRAME
 
-// Reserve two supervisor-only low pages in every LoongArch user page table.
-#define USER_LOW_GUARD_PAGES 2
-#define USER_LOW_GUARD_SHIFT (PGSHIFT + 1)
-
-
 // Kernel stacks: descending from high VA, outside DMW0.
 // 3*PGSIZE per process (2 mapped + 1 unmapped guard).
 //

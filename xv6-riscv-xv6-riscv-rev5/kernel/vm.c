@@ -448,9 +448,6 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
   if (va >= MAXVA)
     return 0;
 
-  if (va < hal_vm_user_min_size())
-    return 0;
-
   if (va >= p->sz)
     return 0;
   va = PGROUNDDOWN(va);

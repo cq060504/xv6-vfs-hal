@@ -1,12 +1,9 @@
 #include "types.h"
 #include "hal/hal.h"
-#include "defs.h"
 
 _Static_assert(KSTACK_TOP % PGSIZE == 0, "KSTACK_TOP must be page aligned");
 _Static_assert(KSTACK_TOP - KSTACK_REGION_BOTTOM == NPROC * 3 * PGSIZE,
                "kernel stack window must contain every process stack and guard");
-_Static_assert(USER_LOW_GUARD_PAGES == (1 << (USER_LOW_GUARD_SHIFT - PGSHIFT)),
-               "low guard shift must match the reserved page count");
 
 extern void tlb_refill_entry(void);
 
@@ -63,38 +60,4 @@ void
 hal_vm_unmap_trampoline(pagetable_t pagetable)
 {
   (void)pagetable;
-}
-
-int
-hal_vm_reserve_user_low(pagetable_t pagetable, uint64 *initial_sz)
-{
-  uint64 mapped = 0;
-  *initial_sz = 0;
-
-  for(int i = 0; i < USER_LOW_GUARD_PAGES; i++){
-    char *guard = kalloc();
-    if(guard == 0)
-      goto fail;
-    memset(guard, 0, PGSIZE);
-    if(mappages(pagetable, mapped, PGSIZE,
-                (uint64)guard, PTE_R) < 0){
-      kfree(guard);
-      goto fail;
-    }
-    mapped += PGSIZE;
-  }
-
-  *initial_sz = mapped;
-  return 0;
-
-fail:
-  if(mapped != 0)
-    uvmunmap(pagetable, 0, mapped / PGSIZE, 1);
-  return -1;
-}
-
-uint64
-hal_vm_user_min_size(void)
-{
-  return USER_LOW_GUARD_PAGES * PGSIZE;
 }

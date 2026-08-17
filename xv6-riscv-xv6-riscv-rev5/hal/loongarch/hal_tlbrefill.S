@@ -5,7 +5,7 @@
 # four-level 9-9-9-9 scheme configured in kvminithart() via PWCL/PWCH.
 #
 # Accepted virtual addresses:
-#   User:   2*PGSIZE <= VA < MAXVA            (low half, via PGDL)
+#   User:   0 <= VA < MAXVA                   (low half, via PGDL)
 #   Kernel: KSTACK_REGION_BOTTOM <= VA < KSTACK_TOP  (high half, via PGDH)
 
 #include "arch.h"
@@ -26,16 +26,13 @@ tlb_refill_entry:
         csrwr   $t0, CSR_TLBREHI
 
         # --- VA validation ---
-        # Accept: user [2*PGSIZE, MAXVA) or kernel [KSTACK_REGION_BOTTOM, KSTACK_TOP)
+        # Accept: user [0, MAXVA) or kernel [KSTACK_REGION_BOTTOM, KSTACK_TOP)
         csrrd   $t0, CSR_TLBRBADV
 
         # Kernel addresses have bit 63 set (negative in signed comparison).
         blt     $t0, $r0, .Lchk_kern
 
-        # User address: must be in [2*PGSIZE, MAXVA).
-        srli.d  $t0, $t0, USER_LOW_GUARD_SHIFT
-        beqz    $t0, .Ltlbr_invalid
-        csrrd   $t0, CSR_TLBRBADV
+        # User address: must be below MAXVA.
         srli.d  $t0, $t0, HAL_VA_BITS  # reject VA >= MAXVA
         bnez    $t0, .Ltlbr_invalid
         b       .Lrefill_ok
